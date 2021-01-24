@@ -3,33 +3,7 @@ library(tidyverse)
 library(patchwork)
 library(survival)
 
-## set up some formatting functions ----
-summaryTable = function(tmp,bootstraps=1) {
-  groupPercent = function(df) df %>% summarise(N=round(n()/bootstraps)) %>% mutate(`%age`=sprintf("%1.1f%%",N/sum(N)*100))
-  groupMean = function(df,col) df %>% filter(is.finite({{col}})) %>% summarise(N=round(n()/bootstraps),  `mean (SD)`=sprintf("%1.1f (\u00B1%1.1f)",mean({{col}},na.rm=TRUE),sd({{col}},na.rm=TRUE)))
-   bind_rows(
-    tmp %>% group_by(value = NHSER_name) %>% groupPercent() %>% mutate(category="Region"),
-    tmp %>% group_by(value = ethnicity_final) %>% groupPercent() %>% mutate(category="Ethnicity"),
-    tmp %>% group_by(value = sex) %>% groupPercent() %>% mutate(category="Gender"),
-    tmp %>% group_by(value = sGeneEra) %>% groupPercent() %>% mutate(category="S gene"),
-    tmp %>% group_by(value = deathStatus) %>% groupPercent() %>% mutate(category="Status"),
-    tmp %>% group_by(value = ageCat) %>% groupPercent() %>% mutate(category="Age by category"),
-    tmp %>% groupMean(age) %>% mutate(category="Age"),
-    tmp %>% groupMean(CT_N) %>% mutate(category="N gene CT"),
-    tmp %>% group_by(value=imd_decile_2) %>% groupPercent() %>% mutate(category="IMD")
-  ) %>% ungroup()
-}
-
-tidyCoxmodel = function(survModel) {
-  broom::tidy(survModel) %>% bind_cols(as.data.frame(confint(survModel))) %>% 
-    mutate(
-      HR = exp(estimate), 
-      HR.lower=exp(`2.5 %`), 
-      HR.upper=exp(`97.5 %`), 
-      HR.pValue = p.value)
-}
-
-## set up data loading function ----
+## Data loading functions ----
 getDeathsLineList = function(path, ...) {
   tmp = readxl::read_excel(path, col_types = "text")
   datecols = c(colnames(tmp) %>% stringr::str_subset("date"),"dod")
@@ -51,38 +25,6 @@ getDeathsLineList = function(path, ...) {
 getSGeneLineList = function(path,...) {
   tmp = readr::read_csv(path)
   return(tmp %>% dplyr::ungroup())
-}
-
-normaliseGender = function(gender) {
-  case_when(
-    is.na(gender) ~ NA_character_,
-    gender %>% stringr::str_detect("f|F") ~ "female",
-    gender %>% stringr::str_detect("m|M") ~ "male",
-    gender %>% stringr::str_detect("u|U") ~ "unknown",
-    TRUE ~ "unknown")
-}
-
-# function to help interpret S gene N gene and ORF gene in 
-interpretSGene = function(sGeneLineList, S_CT = 40, ORF1ab_CT = 30, N_CT = 30, Control_CT = Inf) {
-  sGeneLineList %>% mutate(
-    ORF1ab_CT_threshold = ORF1ab_CT,
-    N_CT_threshold = N_CT,
-    S_CT_threshold = S_CT,
-    S_pos = P2CH3CQ > 0 & P2CH3CQ <= S_CT,
-    S_undetect = P2CH3CQ == 0,
-    N_pos = P2CH2CQ > 0 & P2CH2CQ <= N_CT,
-    ORF1ab_pos = P2CH1CQ > 0 & P2CH1CQ <= ORF1ab_CT,
-    Control_pos = P2CH4CQ > 0 & P2CH4CQ <= Control_CT,
-    sGene = case_when(
-      is.na(P2CH1CQ) ~ "Unknown",
-      S_pos & N_pos & ORF1ab_pos & Control_pos ~ "Positive",
-      S_undetect & N_pos & ORF1ab_pos & Control_pos ~ "Negative",
-      TRUE ~ "Equivocal"
-    ),
-    CT_N = ifelse(P2CH2CQ > 0, P2CH2CQ, 40)
-  ) %>% mutate(
-    result = ifelse(!Control_pos,"No control",paste0(ifelse(S_pos,"S+","S-"),ifelse(N_pos,"N+","N-"),ifelse(ORF1ab_pos,"ORF+","ORF-")))
-  )
 }
 
 #' @description Load line list
@@ -110,12 +52,22 @@ getLineList = function(path,...) {
     ) %>% dplyr::ungroup())
 }
 
+
+normaliseGender = function(gender) {
+  case_when(
+    is.na(gender) ~ NA_character_,
+    gender %>% stringr::str_detect("f|F") ~ "female",
+    gender %>% stringr::str_detect("m|M") ~ "male",
+    gender %>% stringr::str_detect("u|U") ~ "unknown",
+    TRUE ~ "unknown")
+}
+
 ## Load the data
 # check if already loaded
 # we discard S gene data for patients who have had more than one S gene test result. 
 # this will put these patients into the "Unknown / P1" category, and will be excluded from the case control part of study but included in the main analysis.
 
-loadData = function(dir="~/Data/new-variant",date="20210118", censorLength = 28, B117Date = as.Date("2020-10-01") ,latestDate = NULL) {
+loadData = function(dir="~/Data/new-variant",date="20210118", censorLength = 28, B117Date = as.Date("2020-10-01"), earliestDate = B117Date, latestDate = NULL, minAge = 30) {
   ll = getLineList(path=paste0(dir,"/Anonymised Combined Line List ",date,".csv"))
   message("Loaded cases line list ",date,":",nrow(ll))
   dll = getDeathsLineList(path = paste0(dir,"/",date," COVID19 Deaths.xlsx"))
@@ -133,10 +85,8 @@ loadData = function(dir="~/Data/new-variant",date="20210118", censorLength = 28,
   excludedSgll = sgll %>% anti_join(sgllUniq, by = "FINALID")
   if(nrow(excludedSgll) > 0) {
     warning("we excluded ",excludedSgll %>% pull(FINALID) %>% unique() %>% length()," patients with multiple S Gene test results in pillar 2")
-    excludedDeaths = dll %>% inner_join(excludedSgll, by="FINALID", suffix=c("",".sgene")) %>% interpretSGene() #%>% filter(specimen_date > "2020-10-01" & age>30)
+    excludedDeaths = dll %>% inner_join(excludedSgll, by="FINALID", suffix=c("",".sgene")) #%>% filter(specimen_date > "2020-10-01" & age>30)
     warning("of these ",excludedDeaths %>% filter(specimen_date.sgene > B117Date) %>% pull(FINALID) %>% unique() %>% length()," died during the study period")
-    warning("of these ",excludedDeaths %>% filter(specimen_date.sgene > B117Date) %>% filter(sGene=="Positive") %>% pull(FINALID) %>% unique() %>% length()," would have been S gene positive")
-    warning("of these ",excludedDeaths %>% filter(specimen_date.sgene > B117Date) %>% filter(sGene=="Negative") %>% pull(FINALID) %>% unique() %>% length()," would have been S gene negative")
   }
   
   # get the S gene line list and remove all patients who have more than one S Gene result. Otherwise we don;t have a single source in time for when to start the survival clock.
@@ -149,7 +99,7 @@ loadData = function(dir="~/Data/new-variant",date="20210118", censorLength = 28,
     left_join(dll %>% mutate(FINALID=as.numeric(finalid)), by=c("FINALID"),suffix=c("",".death")) %>% 
     filter(specimen_date > B117Date & specimen_date <= latestDate) # make sure we are not including tests for which we could not have death info.
   
-  message("celect cases with specimen_date >",B117Date," & <=",latestDate," :",nrow(coxData))
+  message("celect cases with specimen_date >",earliestDate," & <=",latestDate," :",nrow(coxData))
   
   coxData %>% filter(is.na(specimen_date.sgene)) %>% nrow() %>% message(" patients with missing sGene result included")
   coxData %>% filter(is.na(dod)) %>% nrow() %>% message(" patients who have no date of death (and are presumed alive)")
@@ -185,12 +135,14 @@ loadData = function(dir="~/Data/new-variant",date="20210118", censorLength = 28,
       status = ifelse(!diedWithin28days,0,1)
     ) %>%
     mutate(
-      ageCat = cut(age, breaks = c(-Inf,30,60,70,80,Inf), labels = c("<30","30-59","60-69","70-79","80+"), right=FALSE)
+      ageCat = cut(age, breaks = c(-Inf,30,60,70,80,Inf), labels = c("<30","30-59","60-69","70-79","80+"), right=FALSE),
+      LTLA_name =  as.factor(LTLA_name)
     )
   
   coxData2 %>% filter(is.na(imd_decile)) %>% nrow() %>% message(" patients with missing IMD")
   coxData2 %>% filter(is.na(sex) | sex=="Unknown") %>% nrow() %>% message(" patients with missing or unknown gender")
   coxData2 %>% filter(is.na(age)) %>% nrow() %>% message(" patients with unknown age")
+  coxData2 %>% filter(age<minAge) %>% nrow() %>% message(" patients with age <",minAge)
   coxData2 %>% filter(is.na(ethnicity_final)) %>% nrow() %>% message(" patients with unknown ethnicity")
   coxData2 %>% filter(admissionDelay < 0) %>% nrow() %>% message(" patients admitted before pillar 2 test taken")
   coxData2 %>% filter(reportingDelay < 0 | reportingDelay>=20) %>% nrow() %>% message(" patients whose tests are reported before specimen taken or >19 days after specimen taken")
@@ -211,17 +163,76 @@ loadData = function(dir="~/Data/new-variant",date="20210118", censorLength = 28,
       sex = sex %>% forcats::as_factor(),
       imd_decile = forcats::fct_relevel(forcats::as_factor(as.numeric(imd_decile)),"5"),
       imd_decile_2 = forcats::as_factor(as.numeric(imd_decile)),
-      deathStatus = ifelse(diedWithin28days,"Dead <28 days","Other")
-    ) 
+      deathStatus = ifelse(diedWithin28days,"Dead <28 days","Other"),
+      preB117 = specimen_date < B117Date
+    ) %>% filter(age >= minAge)
   
-  ## quality control ----
+  ## quality control
   if (any(is.na(coxData2$LTLA_name))) stop("unknowns for LTLA")
-  # if (any(is.na(coxData3$LTLA_name))) stop("unknowns for LTLA")
+  
   return(coxData2)
 }
 
+## Analysis functions: ----
 
-runAnalysis = function(coxData, sGeneCtThreshold = ctThreshold, ctThreshold=30, bootstraps=10, ageTolerance = 3, specimenDateTolerance = 5,B117Date = as.Date("2020-10-01"),max = 450000*450000, includeRaw=FALSE, includeMatched=FALSE) {
+# function to help interpret S gene N gene and ORF gene in 
+interpretSGene = function(sGeneLineList, S_CT = 40, ORF1ab_CT = 30, N_CT = 30, Control_CT = Inf) {
+  sGeneLineList %>% mutate(
+    ORF1ab_CT_threshold = ORF1ab_CT,
+    N_CT_threshold = N_CT,
+    S_CT_threshold = S_CT,
+    S_pos = P2CH3CQ > 0 & P2CH3CQ <= S_CT,
+    S_undetect = P2CH3CQ == 0,
+    N_pos = P2CH2CQ > 0 & P2CH2CQ <= N_CT,
+    ORF1ab_pos = P2CH1CQ > 0 & P2CH1CQ <= ORF1ab_CT,
+    Control_pos = P2CH4CQ > 0 & P2CH4CQ <= Control_CT,
+    sGene = case_when(
+      is.na(P2CH1CQ) ~ "Unknown",
+      S_pos & N_pos & ORF1ab_pos & Control_pos ~ "Positive",
+      S_undetect & N_pos & ORF1ab_pos & Control_pos ~ "Negative",
+      TRUE ~ "Equivocal"
+    ),
+    CT_N = ifelse(P2CH2CQ > 0, P2CH2CQ, 40)
+  ) %>% mutate(
+    result = ifelse(!Control_pos,"No control",paste0(ifelse(S_pos,"S+","S-"),ifelse(N_pos,"N+","N-"),ifelse(ORF1ab_pos,"ORF+","ORF-")))
+  ) %>% mutate(
+      sGeneEra = case_when(
+        is.na(sGene) ~ "Unknown (and P1)",
+        sGene == "Negative" & !preB117 ~ "Neg Post B.1.1.7",
+        sGene == "Negative" & preB117 ~ "Neg Pre B.1.1.7",
+        TRUE ~ as.character(sGene)
+      ),
+      sGene = sGene %>% forcats::fct_relevel("Positive"),
+      sGeneEra = sGeneEra %>% forcats::as_factor() %>% forcats::fct_relevel("Positive"),
+      relativeCopyNumber = 2^(median(CT_N,na.rm=TRUE)-CT_N)
+    )
+}
+
+bootstrappedCoxModel = function(coxFinal, modelName, modelFormula) {
+  message("Calculating ",modelName)
+  bootSurvModels = coxFinal %>% group_by(boot) %>% group_modify(function(d,g,...) {
+    survModel = survival::coxph(modelFormula, d)
+    out = tidyCoxmodel(survModel) %>% mutate(model=modelName)
+    rm(survModel)
+    return(out)
+  })
+}
+
+tidyCoxmodel = function(survModel) {
+  broom::tidy(survModel) %>% bind_cols(as.data.frame(confint(survModel))) %>% 
+    mutate(
+      HR = exp(estimate), 
+      HR.lower=exp(`2.5 %`), 
+      HR.upper=exp(`97.5 %`), 
+      HR.pValue = p.value)
+}
+
+runAnalysis = function(
+    coxData, sGeneCtThreshold = ctThreshold, ctThreshold=30, 
+    bootstraps=10, ageTolerance = 3, specimenDateTolerance = 5,
+    modelFormula = list(`S gene only`=Surv(time,status) ~ sGene),
+    max = 450000*450000, includeRaw=FALSE, includeMatched=FALSE
+  ) {
   result = list(params=tibble(
     sGeneCtThreshold = sGeneCtThreshold,
     ctThreshold = ctThreshold,
@@ -230,37 +241,23 @@ runAnalysis = function(coxData, sGeneCtThreshold = ctThreshold, ctThreshold=30, 
     specimenDateTolerance = specimenDateTolerance
     ))
   
-  message("Interpreting data with CT threshold of S<",sGeneCtThreshold,":N<",ctThreshold,":ORF<",ctThreshold,"; tolerances - age=",ageTolerance,":specimen_date=",specimenDateTolerance)
+  message("Interpreting data with CT threshold of S<",sGeneCtThreshold,":N<",ctThreshold,":ORF<",ctThreshold,
+          "; tolerances - age=",ageTolerance,":specimen_date=",specimenDateTolerance)
   
   # exclude people < 30 as mortality so low
-  coxData3 = coxData %>% filter(age >= 30) %>% 
-    interpretSGene(S_CT = sGeneCtThreshold,N_CT = ctThreshold,ORF1ab_CT = ctThreshold) %>% 
-    mutate(
-      sGeneEra = case_when(
-        is.na(sGene) ~ "Unknown (and P1)",
-        sGene == "Negative" & specimen_date.sgene >= B117Date ~ "Neg Post B.1.1.7",
-        sGene == "Negative" & specimen_date.sgene < B117Date ~ "Neg Pre B.1.1.7",
-        TRUE ~ as.character(sGene)
-      ),
-      sGene = sGene %>% forcats::fct_relevel("Positive"),
-      sGeneEra = sGeneEra %>% forcats::as_factor() %>% forcats::fct_relevel("Positive"),
-      relativeCopyNumber = 2^(median(CT_N,na.rm=TRUE)-CT_N),
-      LTLA_name =  as.factor(LTLA_name)
-    )
+  coxData3 = coxData %>% interpretSGene(S_CT = sGeneCtThreshold,N_CT = ctThreshold,ORF1ab_CT = ctThreshold)
   
   if (includeRaw) result$rawData = coxData3
   
   posSgene = coxData3 %>% filter(sGene=="Positive")
   negSgene = coxData3 %>% filter(sGene=="Negative")
-  
-  
   message("S gene positives: ",posSgene %>% nrow())
   message("S gene negatives: ",negSgene %>% nrow())
   
   if(as.numeric(nrow(negSgene)) * as.numeric(nrow(posSgene)) > max) stop("this would try and create a very large cross join of ",nrow(posSgene),"x",nrow(negSgene))
   
   # pairwise matching
-  ## case matching ----
+  ## case matching: ----
   # match cases by "sex","imd_decile","LTLA_name","ethnicity_final","ageCat"
   # then ensure age difference < 2 years & specimen date < 4 days
   # select S negatives and match to S positives
@@ -275,10 +272,18 @@ runAnalysis = function(coxData, sGeneCtThreshold = ctThreshold, ctThreshold=30, 
       abs(age.neg-age.pos) <= ageTolerance & 
       abs(as.numeric(specimen_date.neg-specimen_date.pos)) <= specimenDateTolerance
     )
-  
   rm(coxData3)
   
-  # randomly select a single match out of possible matches
+  # TODO: I am not sure if there is a risk here of a systematic bias, or at least a random bias that is systematically present
+  # throughout the analysis.
+  # What happens here is the majority of matches are 1:1 and will always be picked in each bootstrap.
+  # These matches are essentially oversampled
+  # Other match ratios eg. 1:2 or 2:1 will be randomly picked for each boot strap - the lines starting group_by(FINALID.neg) and group_by(FINALID.pos) do this.
+  # There are not equal amounts of potential matches from both classes before sampling.
+  message("Before sampling the matched set contains ",n_distinct(matches$FINALID.neg)," unique S gene negatives and ",n_distinct(matches$FINALID.pos)," unique S gene positives")
+  
+  # @Leon
+  # randomly select a single match out of possible matches for each bootstrap
   set.seed(101)
   matchesSelected = NULL
   message("bootstrapping",appendLF = FALSE)
@@ -322,7 +327,7 @@ runAnalysis = function(coxData, sGeneCtThreshold = ctThreshold, ctThreshold=30, 
   )
   result$table1Data = combinedSummary1
 
-  ## Construct table 1 summary of pairwise matching ----
+  ## summary of pairwise matching data set ----
   message("Summarising results")
   combinedSummary2 = summaryTable(posMatched, bootstraps) %>% rename_with(~paste0("S pos ",.x),.cols=c(N,`%age`,`mean (SD)`)) %>% #,by=c("category","value")) %>%
     full_join(summaryTable(negMatched, bootstraps) %>% rename_with(~paste0("S neg ",.x),.cols=c(N,`%age`,`mean (SD)`)),by=c("category","value")) %>% 
@@ -337,42 +342,139 @@ runAnalysis = function(coxData, sGeneCtThreshold = ctThreshold, ctThreshold=30, 
   
   result$table3Data = deltas
   
-  ## Survival models ----
-  # Basic model
-  # Adjusted for N gene CT values
-
-  message("Calculating unadjusted survival models")
-  bootSurvModels = coxFinal %>% group_by(boot) %>% group_modify(function(d,g,...) {
-    survModel = survival::coxph(Surv(time,status) ~ sGene, d)
-    out = tidyCoxmodel(survModel)
-    rm(survModel)
-    return(out)
-  })
-
-  result$table4Data = bootSurvModels
+  ## execute survival models ----
+  result$table4Data = NULL
+  for (modelName in names(modelFormula)) {
+    result$table4Data = result$table4Data %>% bind_rows(
+      bootstrappedCoxModel(coxFinal, modelName, modelFormula[[modelName]])
+    )
+  }
   
-  message("Calculating survival models adjusted for S status and CT of N Gene")
-  bootSurvModels2 = coxFinal %>% group_by(boot) %>% group_modify(function(d,g,...) {
-    survModel2 = survival::coxph(Surv(time,status) ~ sGene+CT_N, d)
-    out = tidyCoxmodel(survModel2)
-    rm(survModel2)
-    return(out)
+  # https://ete-online.biomedcentral.com/articles/10.1186/s12982-017-0060-8
+  # this implements a paired data direct 
+  message("Paired data hazard rate")
+  result$table5Data = matchesSelected %>% group_by(boot) %>% group_modify(function(d,g,...) {
+    tibble(
+      G=d %>% filter(time.neg < time.pos & status.neg==1) %>% nrow(),
+      H=d %>% filter(time.pos < time.neg & status.pos==1) %>% nrow(),
+    ) %>% mutate(
+      HR = G/H,
+      estimate = log(G/H),
+      std.error = sqrt(1/G + 1/H),
+      HR.lower = exp(estimate-1.96*std.error),
+      HR.upper = exp(estimate+1.96*std.error),
+      HR.pValue = pnorm(0,estimate,std.error),
+      model = "Unweighted PLME HR",
+      term = "sGeneNegative"
+    )
   })
-
-  result$table5Data = bootSurvModels2
-  
-  message("Calculating survival models adjusted for S status and age")
-  bootSurvModels3 = coxFinal %>% group_by(boot) %>% group_modify(function(d,g,...) {
-    survModel3 = survival::coxph(Surv(time,status) ~ sGene+age, d)
-    out = tidyCoxmodel(survModel3)
-    rm(survModel3)
-    return(out)
-  })
-  
-  result$table6Data = bootSurvModels3
   
   return(result)
 }
+
+
+
+
+
+runAnalysisQuick = function(
+  coxData, sGeneCtThreshold = ctThreshold, ctThreshold=30, 
+  ageTolerance = 3, specimenDateTolerance = 5,
+  max = 450000*450000, includeRaw=FALSE, includeMatched=FALSE
+) {
+  result = list(params=tibble(
+    sGeneCtThreshold = sGeneCtThreshold,
+    ctThreshold = ctThreshold,
+    ageTolerance = ageTolerance,
+    specimenDateTolerance = specimenDateTolerance
+  ))
+  
+  message("Interpreting data with CT threshold of S<",sGeneCtThreshold,":N<",ctThreshold,":ORF<",ctThreshold,
+          "; tolerances - age=",ageTolerance,":specimen_date=",specimenDateTolerance)
+  
+  coxData3 = coxData %>% interpretSGene(S_CT = sGeneCtThreshold,N_CT = ctThreshold,ORF1ab_CT = ctThreshold)
+  
+  if (includeRaw) result$rawData = coxData3
+  
+  posSgene = coxData3 %>% filter(sGene=="Positive")
+  negSgene = coxData3 %>% filter(sGene=="Negative")
+  message("S gene positives: ",posSgene %>% nrow())
+  message("S gene negatives: ",negSgene %>% nrow())
+  
+  if(as.numeric(nrow(negSgene)) * as.numeric(nrow(posSgene)) > max) stop("this would try and create a very large cross join of ",nrow(posSgene),"x",nrow(negSgene))
+  
+  # pairwise matching
+  ## case matching: ----
+  # match cases by "sex","imd_decile","LTLA_name","ethnicity_final","ageCat"
+  # then ensure age difference < 2 years & specimen date < 4 days
+  # select S negatives and match to S positives
+  # randomly select a single match out of possible matches
+  matches = 
+    negSgene %>% 
+    select(FINALID,sex,imd_decile,LTLA_name,ethnicity_final,ageCat,age,specimen_date,time,status) %>% 
+    inner_join(
+      posSgene %>% select(FINALID,sex,imd_decile,LTLA_name,ethnicity_final,ageCat,age,specimen_date,time,status), 
+      by=c("sex","imd_decile","LTLA_name","ethnicity_final","ageCat"),suffix=c(".neg",".pos")) %>% 
+    filter(
+      abs(age.neg-age.pos) <= ageTolerance & 
+        abs(as.numeric(specimen_date.neg-specimen_date.pos)) <= specimenDateTolerance
+    )
+  
+  rm(coxData3)
+  
+  # calculate a weighing for each side of each match based on frequecy
+  matches = matches %>% 
+    group_by(FINALID.pos) %>% mutate(wt.pos = 1/n()) %>%
+    group_by(FINALID.neg) %>% mutate(wt.neg = 1/n()) %>%
+    ungroup()
+  
+  if (includeMatched) {
+    result$weightedMatchedData = matched
+  }
+  
+  # https://ete-online.biomedcentral.com/articles/10.1186/s12982-017-0060-8
+  # TODO: explain weighing modification to pairwise matched HR calculation to account for over-matching
+  PLME_HR = matches %>% 
+    mutate(
+      weightedG = ifelse(time.neg < time.pos & status.neg==1, wt.neg, 0), 
+      weightedH = ifelse(time.pos < time.neg & status.pos==1, wt.pos, 0),
+    ) %>%
+    summarise(
+      G=sum(weightedG),
+      H=sum(weightedH)
+    ) %>% mutate(
+      mean.HR = G/H,
+      mean.estimate = log(G/H),
+      mean.std.error = sqrt(1/G + 1/H),
+      mean.HR.lower = exp(mean.estimate-1.96*mean.std.error),
+      mean.HR.upper = exp(mean.estimate+1.96*mean.std.error),
+      mean.HR.pValue = pnorm(0,mean.estimate,mean.std.error),
+      model = "Weighted PLME HR",
+      term = "sGeneNegative"
+    )
+  
+  return(PLME_HR)
+}
+
+
+
+
+## Formatting functions ----
+summaryTable = function(tmp,bootstraps=1) {
+  groupPercent = function(df) df %>% summarise(N=as.integer(round(n()/bootstraps))) %>% mutate(`%age`=sprintf("%1.1f%%",N/sum(N)*100))
+  groupMean = function(df,col) df %>% filter(is.finite({{col}})) %>% summarise(N=as.integer(round(n()/bootstraps)),  `mean (SD)`=sprintf("%1.1f (\u00B1%1.1f)",mean({{col}},na.rm=TRUE),sd({{col}},na.rm=TRUE)))
+  bind_rows(
+    tmp %>% group_by(value = NHSER_name) %>% groupPercent() %>% mutate(category="Region"),
+    tmp %>% group_by(value = ethnicity_final) %>% groupPercent() %>% mutate(category="Ethnicity"),
+    tmp %>% group_by(value = sex) %>% groupPercent() %>% mutate(category="Gender"),
+    tmp %>% group_by(value = sGeneEra) %>% groupPercent() %>% mutate(category="S gene"),
+    tmp %>% group_by(value = deathStatus) %>% groupPercent() %>% mutate(category="Status"),
+    tmp %>% group_by(value = ageCat) %>% groupPercent() %>% mutate(category="Age by category"),
+    tmp %>% groupMean(age) %>% mutate(category="Age"),
+    tmp %>% groupMean(CT_N) %>% mutate(category="N gene CT"),
+    tmp %>% group_by(value=imd_decile_2) %>% groupPercent() %>% mutate(category="IMD")
+  ) %>% ungroup()
+}
+
 
 summariseAnalysisRun = function(run) {
   if(is.data.frame(run)) {
@@ -385,11 +487,15 @@ summariseAnalysisRun = function(run) {
   tmp = tmp %>% bind_cols(
     run$table3Data %>% summarise(mean.ageDifference = mean(ageDifference), mean.specimenDateDifference = mean(specimenDateDifference)),
   )
-  tmp2 = bind_rows(
-    run$table4Data %>% group_by(term) %>% summarise(across(.cols = c(estimate,std.error,HR,HR.lower,HR.upper,HR.pValue), .fns = c(mean=mean,sd=sd), .names="{.fn}.{.col}")) %>% mutate(model = "S gene only"),
-    run$table5Data %>% group_by(term) %>% summarise(across(.cols = c(estimate,std.error,HR,HR.lower,HR.upper,HR.pValue), .fns = c(mean=mean,sd=sd), .names="{.fn}.{.col}")) %>% mutate(model = "S gene + N gene CT"),
-    run$table6Data %>% group_by(term) %>% summarise(across(.cols = c(estimate,std.error,HR,HR.lower,HR.upper,HR.pValue), .fns = c(mean=mean,sd=sd), .names="{.fn}.{.col}")) %>% mutate(model = "S gene + age")
-  )
+  # combining bootstrap results
+  tmp2 = run$table4Data %>% group_by(model,term) %>% 
+    summarise(
+      across(
+        .cols = c(estimate,std.error,HR,HR.lower,HR.upper,HR.pValue), 
+        .fns = c(mean=mean,sd=sd), .names="{.fn}.{.col}" # calculate mean and SD for all bootstrapped parameters
+      )
+    )
+  
   tmp2 = tmp2 %>% left_join(tmp, by=character()) %>% left_join(run$params, by=character())
   return(tmp2 %>% select(model,everything()))
 }
@@ -399,11 +505,19 @@ prettyPrintSummary = function(summaryDf) {
     `Hazard rate (95% CI)`=sprintf("%1.1f (%1.1f \u2013 %1.1f)",mean.HR,mean.HR.lower,mean.HR.upper),
     `p value`=scales::pvalue(mean.HR.pValue,0.001)) %>%
     mutate(
-      Value = case_when(term == "sGeneNegative"~"Negative",TRUE~NA_character_),
+      Value = case_when(
+        term %>% stringr::str_starts("sGene") ~ term %>% stringr::str_remove("sGene"),
+        term %>% stringr::str_starts("sex") ~ term %>% stringr::str_remove("sex"),
+        term %>% stringr::str_starts("imd_decile") ~ term %>% stringr::str_remove("imd_decile"),
+        term %>% stringr::str_starts("ethnicity_final") ~ term %>% stringr::str_remove("ethnicity_final"),
+        TRUE~NA_character_),
       Predictor = case_when(
-        term == "sGeneNegative"~"S gene status",
+        term %>% stringr::str_starts("sGene")~"S gene status",
         term == "CT_N"~"N gene CT value",
         term == "age"~"Age",
+        term %>% stringr::str_starts("sex")~"Gender",
+        term %>% stringr::str_starts("imd_decile")~"IMD",
+        term %>% stringr::str_starts("ethnicity_final")~"Ethnicity",
         TRUE~NA_character_
       ),
       Model = model) %>%
