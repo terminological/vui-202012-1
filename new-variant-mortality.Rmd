@@ -76,22 +76,27 @@ if(!exists("coxData"))
 models = list(
   `S gene only`=Surv(time,status) ~ sGene, 
   `S gene + N gene CT`=Surv(time,status) ~ sGene+CT_N, 
-  `S gene + age` = Surv(time,status) ~ sGene+age
+  `S gene + age + gender` = Surv(time,status) ~ sGene+age+sex
+)
+
+sGeneOnly = list(
+  `S gene only`=Surv(time,status) ~ sGene
 )
 
 if(!exists("run30")) 
   run30 = runAnalysis(
     coxData, sGeneCtThreshold = 30, ctThreshold = 30,
-    bootstraps = 100,ageTolerance = 3,specimenDateTolerance=5,
+    bootstraps = 10,ageTolerance = 3,specimenDateTolerance=5,
     modelFormula = models,
     includeRaw=TRUE,includeMatched = TRUE)
 
 
-p1 = ggplot(run30$rawMatchedData, aes(x=time,colour=sGene,linetype=deathStatus))+geom_line(stat="count")+scale_y_log10()
-p2 = ggplot(run30$rawMatchedData %>% filter(status==0),aes(x=time,colour=sGene))+ stat_ecdf(geom = "step")+ylab("P(censored before t|censored)")
-p3 = ggplot(run30$rawMatchedData %>% filter(status==1),aes(x=time,colour=sGene))+ stat_ecdf(geom = "step")+ylab("P(died before t|died)")
+p1 = ggplot(run30$coxMatchedData, aes(x=time,colour=sGene,linetype=deathStatus))+geom_line(stat="count")+scale_y_log10()
+p2 = ggplot(run30$coxMatchedData %>% filter(status==0),aes(x=time,colour=sGene))+ stat_ecdf(geom = "step")+ylab("P(censored before t|censored)")
+p3 = ggplot(run30$coxMatchedData %>% filter(status==1),aes(x=time,colour=sGene))+ stat_ecdf(geom = "step")+ylab("P(died before t|died)")
 
 p1+p2+p3+patchwork::plot_annotation(tag_levels = "A")+patchwork::plot_layout(guides="collect")
+rm(p1,p2,p3)
 ```
 
 ### Estimate HR using weighted paired matches approach
@@ -107,13 +112,14 @@ PLME_HR = runAnalysisQuick(
 PLME_HR %>% prettyPrintSummary()
 
 # Unweighted on bootstrapped paired
-run30$table5Data %>% group_by(model,term) %>% 
+UnwtPLME_HR = run30$table5Data %>% group_by(model,term) %>% 
     summarise(
       across(
         .cols = c(estimate,std.error,HR,HR.lower,HR.upper,HR.pValue), 
         .fns = c(mean=mean,sd=sd), .names="{.fn}.{.col}" # calculate mean and SD for all bootstrapped parameters
       )
-    ) %>% prettyPrintSummary()
+    ) 
+UnwtPLME_HR %>% prettyPrintSummary()
 ```
 
 
@@ -138,11 +144,7 @@ if(spo) {
 ```{r}
 
 if(spo) {
-  run30$table2Data %>% mutate(
-    `S pos N` = as.integer(`S pos N`),
-    `S neg N` = as.integer(`S neg N`),
-    `Died N` = as.integer(`Died N`),
-    ) %>% group_by(category) %>% 
+  run30$table2Data %>% group_by(category) %>% 
     standardPrintOutput::saveTable("~/Dropbox/covid19/new-variant/CaseMatchedSummaryTable",defaultFontSize = 8)
 } else {
   knitr::kable(run30$table2Data)
@@ -169,14 +171,7 @@ if(spo) {
 ```{r}
 
 tmp = bootstrappedCoxModel(run30$rawMatchedData, "Full model", Surv(time,status) ~ sGene+age+sex+imd_decile+ethnicity_final+CT_N)
-tmp = tmp %>% group_by(model,term) %>% 
-    summarise(
-      across(
-        .cols = c(estimate,std.error,HR,HR.lower,HR.upper,HR.pValue), 
-        .fns = c(mean=mean,sd=sd), .names="{.fn}.{.col}" # calculate mean and SD for all bootstrapped parameters
-      )
-    )
-tmp %>% prettyPrintSummary()
+tmp %>% combineBootstraps() %>% prettyPrintSummary()
 
 ```
 
@@ -221,6 +216,54 @@ if(spo) {
 } else {
   fig2
 }
+```
+
+## 
+
+```{r}
+run30$params
+run30$table4Data  %>% combineBootstraps() %>% prettyPrintSummary()
+run30$table5Data  %>% combineBootstraps() %>% prettyPrintSummary()
+
+run30$pairedMatchedUnfilteredData %>% group_by(FINALID.neg) %>% summarise(count = n_distinct(FINALID.pos)) %>% ungroup() %>% group_by(count) %>% count()
+run30$pairedMatchedUnfilteredData %>% group_by(FINALID.pos) %>% summarise(count = n_distinct(FINALID.neg)) %>% ungroup() %>% group_by(count) %>% count()
+
+run30$pairedMatchedUnfilteredData %>% nrow()
+run30$pairedMatchedUnfilteredData %>% distinct(FINALID.neg, FINALID.pos) %>% nrow()
+
+run30drop = runAnalysis(
+    coxData, sGeneCtThreshold = 30, ctThreshold = 30,
+    bootstraps = 10,ageTolerance = 3,specimenDateTolerance=5,
+    modelFormula = sGeneOnly,resolutionStrategy = "drop")
+
+run30drop$table4Data  %>% combineBootstraps() %>% prettyPrintSummary()
+run30drop$table5Data  %>% combineBootstraps() %>% prettyPrintSummary()
+
+run30none = runAnalysis(
+    coxData, sGeneCtThreshold = 30, ctThreshold = 30,
+    bootstraps = 10,ageTolerance = 3,specimenDateTolerance=5,
+    modelFormula = sGeneOnly,resolutionStrategy = "none")
+
+run30none$table4Data  %>% combineBootstraps() %>% prettyPrintSummary()
+run30none$table5Data  %>% combineBootstraps() %>% prettyPrintSummary()
+
+
+
+run30drop2 = runAnalysis(
+    coxData, sGeneCtThreshold = 30, ctThreshold = 30,
+    bootstraps = 10,ageTolerance = 3,specimenDateTolerance=5,
+    modelFormula = sGeneOnly,resolutionStrategy = "drop",ratio=2)
+
+run30drop2$table4Data  %>% combineBootstraps() %>% prettyPrintSummary()
+run30drop2$table5Data  %>% combineBootstraps() %>% prettyPrintSummary()
+
+
+run30drop3 = runAnalysis(
+    coxData, sGeneCtThreshold = 30, ctThreshold = 30,
+    bootstraps = 10,ageTolerance = 3,specimenDateTolerance=5,
+    modelFormula = sGeneOnly,resolutionStrategy = "drop",ratio.neg=1,ratio.pos=2)
+run30drop3$table4Data  %>% combineBootstraps() %>% prettyPrintSummary()
+
 ```
 
 ## Sensitivity analysis

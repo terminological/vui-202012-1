@@ -63,14 +63,14 @@ p1+p2+p3+patchwork::plot_annotation(tag_levels = "A")+patchwork::plot_layout(gui
 
 popByRegion = readr::read_csv("~/Git/vui-202012-1/popDataByEthnicity.csv")
 popData = readr::read_csv("~/Git/vui-202012-1/popData.csv")
-
+coxData3 = coxData3 %>% left_join(popByRegion, by=c("NHSER_code"="code","ethnicity_final"),suffix=c("",".ethn"))
 ```
 
 ## Age distributions of cases by sGene status
 
 ```{r}
 
-coxData3 = coxData3 %>% left_join(popByRegion, by=c("NHSER_code"="code","ethnicity_final"),suffix=c("",".ethn"))
+
 
 fig1 = ggplot(coxData3,aes(fill=sGeneEra,x=age))+
   geom_bar(aes(y = ..prop..), stat="count",position=position_dodge(width=0.7), width = 0.6)+
@@ -159,7 +159,7 @@ s4 %>% standardPrintOutput::saveThirdPageFigure("~/Dropbox/covid19/new-variant/S
 ```{r}
 s5 = ggplot(coxData3,aes(fill=sGeneEra,x=reportingDelay))+
   geom_bar(aes(y = ..prop..), stat="count",position=position_dodge(width=0.7), width = 0.6)+
-  ylab("probability")
+  ylab("probability")+coord_cartesian(xlim=c(0,10))
   # geom_text(aes( label = scales::percent(..prop..,accuracy=1),
   #                  y= ..prop.. ), stat= "count", vjust = 0.5, hjust=-0.1, position = position_dodge(width=0.6),size=3,angle=90)
 
