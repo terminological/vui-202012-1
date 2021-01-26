@@ -60,7 +60,7 @@ getLineList = function(path,...) {
         cat == 'Residential institution (including residential education)'~"Other/Unknown",
         cat == 'No fixed abode'~"Other/Unknown",
         cat == 'Overseas address'~"Other/Unknown",
-        TRUE~"Other"
+        TRUE ~ "Other/Unknown"
       )
     ) %>% dplyr::ungroup())
 }
@@ -284,6 +284,12 @@ createPairedMatches = function(coxData, ageTolerance, specimenDateTolerance,matc
     filter(
       abs(age.neg-age.pos) <= ageTolerance & 
         abs(as.numeric(specimen_date.neg-specimen_date.pos)) <= specimenDateTolerance
+    ) %>% 
+    group_by(FINALID.neg) %>% mutate(order.pos = n()) %>%
+    group_by(FINALID.pos) %>% mutate(order.neg = n()) %>%
+    ungroup() %>% mutate(
+      mapType.neg = paste0(order.neg,":",order.pos),
+      mapType.pos = paste0(order.pos,":",order.neg)
     )
   
   return(matches)
@@ -312,26 +318,21 @@ uniquifyPairs = function(pairedMatches, resolutionStrategy, bootstraps, ratio.ne
         arrange(rnd) %>% # put the dataset in a random order
         group_by(FINALID.neg) %>% filter(row_number()==1) %>% # filter out a single matching at random from pos to neg
         group_by(FINALID.pos) %>% filter(row_number()==1) %>%  # filter out a single matching at random from neg to pos
+        # N.B. I'm not sure this is as random as it looks
+        # It selects random matches for LHS and then selects random reverse matches that are 
+        # random match. however this leads to situations where there is less chance of
+        # a rhs appearing if it matches a lhs that is over-represented.
+        # it's probably not symmetrical.
         ungroup() %>% mutate(boot = i)
       matchesSelected = bind_rows(matchesSelected,tmp)
     }
     message("..finished")
     
-    # check for some systematic bias as a result of matching process
-    # This is biased by censoring - TODO visualise and explain.
-    # negExcluded = negSgene %>% left_join(negMatched %>% select("FINALID") %>% mutate(matched=1), by="FINALID")
-    # posExcluded = posSgene %>% left_join(posMatched %>% select("FINALID") %>% mutate(matched=1), by="FINALID")
-    # inclusions = bind_rows(negExcluded,posExcluded) %>% mutate(matched = ifelse(is.na(matched), 0, matched))
-    # inclusions %>% group_by(sGene, died, matched) %>% summarise(count = n()) %>% clipr::write_clip() #%>% mutate(percentOfSGene = count/sum(count)) %>% group_by(died) %>% mutate(percentByDiedStatus = count/sum(count)) %>% arrange(sGene,died)
-    # p_died_given_sGene = inclusions %>% group_by(sGene,died) %>% summarise(count = n()) %>% mutate(percent = count/sum(count))
-    # p_died_given_sGene_and_matched = inclusions %>% filter(matched) %>% group_by(sGene,died) %>% summarise(count = n()) %>% mutate(percent = count/sum(count))
-    # p_died_given_sGene %>% clipr::write_clip()
-    # p_died_given_sGene_and_matched %>% clipr::write_clip()
   } else if(resolutionStrategy == "drop") {
     # drop all pairs which have more than one match
     matchesSelected = pairedMatches %>%
-      group_by(FINALID.pos) %>% filter(n() == ratio.pos) %>%
-      group_by(FINALID.neg) %>% filter(n() == ratio.neg) %>%
+      filter(order.pos == ratio.pos) %>%
+      filter(order.neg == ratio.neg) %>%
       ungroup() %>%
       mutate(boot=1, wt.neg=1, wt.pos=1)
   } else if(resolutionStrategy == "none") {
@@ -360,7 +361,7 @@ runAnalysis = function(
     modelFormula = list(`S gene only`=Surv(time,status) ~ sGene),
     max = 450000*450000, includeRaw=FALSE, includeMatched=FALSE,
     matchOn = c("sex","imd_decile","LTLA_name","ethnicity_final","ageCat"), #"residential_category"),
-    resolutionStrategy = "bootstrap",ratio.neg=1,ratio.pos=1
+    resolutionStrategy = "none",ratio.neg=1,ratio.pos=1
   ) {
   result = list(params=tibble(
     sGeneCtThreshold = sGeneCtThreshold,
@@ -377,6 +378,7 @@ runAnalysis = function(
   coxData3 = coxData %>% interpretSGene(S_CT = sGeneCtThreshold,N_CT = ctThreshold,ORF1ab_CT = ctThreshold)
   if (includeRaw) result$rawData = coxData3
   
+  browser
   # make a set of matched pairs
   matches = coxData3 %>% createPairedMatches(ageTolerance = ageTolerance, specimenDateTolerance = specimenDateTolerance, matchOn = matchOn, max=max)
   if (includeMatched) result$pairedMatchedUnfilteredData = matches

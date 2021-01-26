@@ -98,6 +98,17 @@ p3 = ggplot(run30$coxMatchedData %>% filter(status==1),aes(x=time,colour=sGene))
 p1+p2+p3+patchwork::plot_annotation(tag_levels = "A")+patchwork::plot_layout(guides="collect")
 rm(p1,p2,p3)
 ```
+## Pair matching
+
+```{r}
+
+tmp = run30$pairedMatchedUnfilteredData %>% group_by(order.neg,order.pos) %>% summarise(n=n(), meanDate = mean((as.numeric(specimen_date.neg)+as.numeric(specimen_date.pos)/2)))
+midpoint = as.numeric((min(tmp$meanDate))+as.numeric(max(tmp$meanDate)))/2
+ggplot(tmp,aes(x=order.neg,y=order.pos,fill=n)) + geom_tile()# +geom_label()
+ggplot(tmp %>% filter(order.neg<11,order.pos<11), aes(x=order.neg,y=order.pos,fill=n,label=n)) + geom_tile() +geom_text(colour="white")
+ggplot(tmp, aes(x=order.neg,y=order.pos,fill=as.numeric(meanDate),label=n)) + geom_tile()+scale_fill_gradient2(low="purple",high="green",mid="yellow",midpoint = midpoint)
+```
+
 
 ### Estimate HR using weighted paired matches approach
 
@@ -225,8 +236,6 @@ run30$params
 run30$table4Data  %>% combineBootstraps() %>% prettyPrintSummary()
 run30$table5Data  %>% combineBootstraps() %>% prettyPrintSummary()
 
-run30$pairedMatchedUnfilteredData %>% group_by(FINALID.neg) %>% summarise(count = n_distinct(FINALID.pos)) %>% ungroup() %>% group_by(count) %>% count()
-run30$pairedMatchedUnfilteredData %>% group_by(FINALID.pos) %>% summarise(count = n_distinct(FINALID.neg)) %>% ungroup() %>% group_by(count) %>% count()
 
 run30$pairedMatchedUnfilteredData %>% nrow()
 run30$pairedMatchedUnfilteredData %>% distinct(FINALID.neg, FINALID.pos) %>% nrow()
@@ -234,7 +243,7 @@ run30$pairedMatchedUnfilteredData %>% distinct(FINALID.neg, FINALID.pos) %>% nro
 run30drop = runAnalysis(
     coxData, sGeneCtThreshold = 30, ctThreshold = 30,
     bootstraps = 10,ageTolerance = 3,specimenDateTolerance=5,
-    modelFormula = sGeneOnly,resolutionStrategy = "drop")
+    modelFormula = sGeneOnly,resolutionStrategy = "drop",ratio.neg=1,ratio.pos=1)
 
 run30drop$table4Data  %>% combineBootstraps() %>% prettyPrintSummary()
 run30drop$table5Data  %>% combineBootstraps() %>% prettyPrintSummary()
@@ -251,8 +260,8 @@ run30none$table5Data  %>% combineBootstraps() %>% prettyPrintSummary()
 
 run30drop2 = runAnalysis(
     coxData, sGeneCtThreshold = 30, ctThreshold = 30,
-    bootstraps = 10,ageTolerance = 3,specimenDateTolerance=5,
-    modelFormula = sGeneOnly,resolutionStrategy = "drop",ratio=2)
+    bootstraps = 10,ageTolerance = 3,specimenDateTolerance=3,
+    modelFormula = sGeneOnly,resolutionStrategy = "drop",ratio.neg=1,ratio.pos=2)
 
 run30drop2$table4Data  %>% combineBootstraps() %>% prettyPrintSummary()
 run30drop2$table5Data  %>% combineBootstraps() %>% prettyPrintSummary()
@@ -261,8 +270,24 @@ run30drop2$table5Data  %>% combineBootstraps() %>% prettyPrintSummary()
 run30drop3 = runAnalysis(
     coxData, sGeneCtThreshold = 30, ctThreshold = 30,
     bootstraps = 10,ageTolerance = 3,specimenDateTolerance=5,
-    modelFormula = sGeneOnly,resolutionStrategy = "drop",ratio.neg=1,ratio.pos=2)
+    modelFormula = sGeneOnly,resolutionStrategy = "drop",ratio.neg=1,ratio.pos=3)
 run30drop3$table4Data  %>% combineBootstraps() %>% prettyPrintSummary()
+
+
+run30none2 = runAnalysis(
+    coxData, sGeneCtThreshold = 30, ctThreshold = 30,
+    bootstraps = 10,ageTolerance = 10,specimenDateTolerance=3,
+    modelFormula = models,resolutionStrategy = "none")
+
+run30none2$table4Data  %>% combineBootstraps() %>% prettyPrintSummary()
+
+run30drop1to1 = runAnalysis(
+    coxData, sGeneCtThreshold = 30, ctThreshold = 30,
+    bootstraps = 10,ageTolerance = 10,specimenDateTolerance=3,
+    modelFormula = models,resolutionStrategy = "drop",ratio.neg=1,ratio.pos=1)
+
+run30drop1to1$table4Data  %>% combineBootstraps() %>% prettyPrintSummary()
+
 
 ```
 
