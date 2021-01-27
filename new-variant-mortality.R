@@ -319,10 +319,10 @@ uniquifyPairs = function(pairedMatches, resolutionStrategy, bootstraps, ratio.ne
         group_by(FINALID.neg) %>% filter(row_number()==1) %>% # filter out a single matching at random from pos to neg
         group_by(FINALID.pos) %>% filter(row_number()==1) %>%  # filter out a single matching at random from neg to pos
         # N.B. I'm not sure this is as random as it looks
-        # It selects random matches for LHS and then selects random reverse matches that are 
-        # random match. however this leads to situations where there is less chance of
-        # a rhs appearing if it matches a lhs that is over-represented.
-        # it's probably not symmetrical.
+        # It selects random matches for LHS and then selects random reverse matches that are paired with
+        # LHS random match. however this leads to situations where there is less chance of
+        # a RHS appearing if it matches a LHS that is over-represented.
+        # it's not symmetrical.
         ungroup() %>% mutate(boot = i)
       matchesSelected = bind_rows(matchesSelected,tmp)
     }
@@ -331,16 +331,33 @@ uniquifyPairs = function(pairedMatches, resolutionStrategy, bootstraps, ratio.ne
   } else if(resolutionStrategy == "drop") {
     # drop all pairs which have more than one match
     matchesSelected = pairedMatches %>%
-      filter(order.pos == ratio.pos) %>%
-      filter(order.neg == ratio.neg) %>%
+      filter(order.pos %in% ratio.pos) %>%
+      filter(order.neg %in% ratio.neg) %>%
       ungroup() %>%
       mutate(boot=1, wt.neg=1, wt.pos=1)
+  
   } else if(resolutionStrategy == "none") {
     # ignore duplicates
     matchesSelected = pairedMatches %>% mutate(boot=1) %>%
       group_by(FINALID.neg) %>% mutate(wt.neg=1/n()) %>%
       group_by(FINALID.pos) %>% mutate(wt.pos=1/n()) %>%
       ungroup()
+    
+  # } else if(resolutionStrategy == "node sample") {
+  #   
+  #   nodes = bind_rows( 
+  #     pairedMatches %>% select(FINALID = FINALID.neg) %>% mutate(side="neg"),
+  #     pairedMatches %>% select(FINALID = FINALID.pos) %>% mutate(side="pos"),
+  #   ) %>% distinct()
+  #   
+  #   nodes = nodes %>% mutate(rnd = runif(nrow(nodes)))
+  #   edges = pairedMatches %>% select(FINALID.neg,FINALID.pos) %>% 
+  #     inner_join(nodes %>% rename(rnd.neg = rnd), by=c("FINALID.neg"="FINALID")) %>%
+  #     inner_join(nodes %>% rename(rnd.pos = rnd), by=c("FINALID.pos"="FINALID")) %>%
+  #     mutate(rnd.pair = rnd.neg+rnd.pos) %>% arrange(rnd.pair)
+  #   
+  #   edges = edges %>% group_by(FINALID.neg) %>% mutate(chosen = ifelse(rnd.neg > rnd.pos,""))
+    
   } else {
     stop("No such strategy: ",resolutionStrategy)
   }
@@ -348,11 +365,16 @@ uniquifyPairs = function(pairedMatches, resolutionStrategy, bootstraps, ratio.ne
   return(matchesSelected)
 }
 
-pairedMatchesToCoxData = function(matches, matchOn) {
+pairedMatchesToCoxData = function(matches, matchOn, filterExpr = NULL) {
+  filterExpr=enexpr(filterExpr)
   if (!"boot" %in% colnames(matches)) matches = matches %>% mutate(boot=1)
   sPos = matches %>% select(boot,ends_with(".pos"),all_of(matchOn)) %>% rename_with(.fn=function(x) stringr::str_remove(x,".pos"),.cols=ends_with(".pos")) %>% mutate(sGene="Positive") %>% distinct()
   sNeg = matches %>% select(boot,ends_with(".neg"),all_of(matchOn)) %>% rename_with(.fn=function(x) stringr::str_remove(x,".neg"),.cols=ends_with(".neg")) %>% mutate(sGene="Negative") %>% distinct()
-  return(bind_rows(sPos,sNeg))
+  if (!identical(filterExpr,NULL)) {
+    return(bind_rows(sPos,sNeg) %>% filter(!!filterExpr))
+  } else {
+    return(bind_rows(sPos,sNeg))
+  }
 }
 
 runAnalysis = function(
@@ -360,9 +382,10 @@ runAnalysis = function(
     bootstraps=10, ageTolerance = 3, specimenDateTolerance = 5,
     modelFormula = list(`S gene only`=Surv(time,status) ~ sGene),
     max = 450000*450000, includeRaw=FALSE, includeMatched=FALSE,
-    matchOn = c("sex","imd_decile","LTLA_name","ethnicity_final","ageCat"), #"residential_category"),
-    resolutionStrategy = "none",ratio.neg=1,ratio.pos=1
+    matchOn = c("sex","imd_decile","LTLA_name","ethnicity_final","ageCat"), #,"residential_category"),
+    resolutionStrategy = "none",ratio.neg=1,ratio.pos=1,filterExpr=NULL
   ) {
+  filterExpr = enexpr(filterExpr)
   result = list(params=tibble(
     sGeneCtThreshold = sGeneCtThreshold,
     ctThreshold = ctThreshold,
@@ -388,7 +411,7 @@ runAnalysis = function(
   if (includeMatched) result$pairedMatchedData = matchesSelected
   
   # prepare data for cox PH models
-  coxFinal = matchesSelected %>% pairedMatchesToCoxData(matchOn = matchOn) %>% 
+  coxFinal = matchesSelected %>% pairedMatchesToCoxData(matchOn = matchOn, filter=!!filterExpr) %>% 
     mutate(sGene = sGene %>% forcats::as_factor() %>% forcats::fct_relevel("Positive")) # equivocal category is dropped
   
   negMatched = coxFinal %>% filter(sGene=="Negative")
@@ -406,28 +429,31 @@ runAnalysis = function(
   
   # https://ete-online.biomedcentral.com/articles/10.1186/s12982-017-0060-8
   # this implements a paired data direct measure of hazard rate
-  message("Paired data hazard rate")
-  result$table5Data = matchesSelected %>% group_by(boot) %>% group_modify(function(d,g,...) {
-    tibble(
-      model = c("Unweighted PLME HR","Weighted PLME HR"),
-      G= c(
-        d %>% filter(time.neg < time.pos & status.neg==1) %>% nrow(),
-        d %>% filter(time.neg < time.pos & status.neg==1) %>% summarise(G = sum(wt.neg)) %>% pull(G)
-      ),
-      H=c(
-        d %>% filter(time.pos < time.neg & status.pos==1) %>% nrow(),
-        d %>% filter(time.pos < time.neg & status.pos==1) %>% summarise(H = sum(wt.pos)) %>% pull(H)
+  
+  if(nrow(posMatched) == nrow(negMatched)) {
+    message("Paired data hazard rate can be calculated as data is 1:1")
+    result$table5Data = matchesSelected %>% group_by(boot) %>% group_modify(function(d,g,...) {
+      tibble(
+        model = c("Unweighted PLME HR","Weighted PLME HR"),
+        G= c(
+          d %>% filter(time.neg < time.pos & status.neg==1) %>% nrow(),
+          d %>% filter(time.neg < time.pos & status.neg==1) %>% summarise(G = sum(wt.neg)) %>% pull(G)
+        ),
+        H=c(
+          d %>% filter(time.pos < time.neg & status.pos==1) %>% nrow(),
+          d %>% filter(time.pos < time.neg & status.pos==1) %>% summarise(H = sum(wt.pos)) %>% pull(H)
+        )
+      ) %>% mutate(
+        HR = G/H,
+        estimate = log(G/H),
+        std.error = sqrt(1/G + 1/H),
+        HR.lower = exp(estimate-1.96*std.error),
+        HR.upper = exp(estimate+1.96*std.error),
+        HR.pValue = pnorm(0,estimate,std.error),
+        term = "sGeneNegative"
       )
-    ) %>% mutate(
-      HR = G/H,
-      estimate = log(G/H),
-      std.error = sqrt(1/G + 1/H),
-      HR.lower = exp(estimate-1.96*std.error),
-      HR.upper = exp(estimate+1.96*std.error),
-      HR.pValue = pnorm(0,estimate,std.error),
-      term = "sGeneNegative"
-    )
-  })
+    })
+  }
   
   ## Pull results
   ## high level stats about number of deaths in each arm of control study where 
@@ -458,62 +484,62 @@ runAnalysis = function(
 
 
 
-runAnalysisQuick = function(
-  coxData, sGeneCtThreshold = ctThreshold, ctThreshold=30, 
-  ageTolerance = 3, specimenDateTolerance = 5,
-  matchOn = c("sex","imd_decile","LTLA_name","ethnicity_final","ageCat"), #"residential_category"),
-  max = 450000*450000, includeRaw=FALSE, includeMatched=FALSE
-) {
-  result = list(params=tibble(
-    sGeneCtThreshold = sGeneCtThreshold,
-    ctThreshold = ctThreshold,
-    ageTolerance = ageTolerance,
-    specimenDateTolerance = specimenDateTolerance
-  ))
-  
-  message("Interpreting data with CT threshold of S<",sGeneCtThreshold,":N<",ctThreshold,":ORF<",ctThreshold,
-          "; tolerances - age=",ageTolerance,":specimen_date=",specimenDateTolerance)
-  
-  coxData3 = coxData %>% interpretSGene(S_CT = sGeneCtThreshold,N_CT = ctThreshold,ORF1ab_CT = ctThreshold)
-  if (includeRaw) result$rawData = coxData3
-  
-  matches = coxData3 %>% createPairedMatches(ageTolerance = ageTolerance, specimenDateTolerance = specimenDateTolerance, matchOn = matchOn, max=max)
-  
-  rm(coxData3)
-  
-  # calculate a weighing for each side of each match based on frequecy
-  matches = matches %>% 
-    group_by(FINALID.pos) %>% mutate(wt.pos = 1/n()) %>%
-    group_by(FINALID.neg) %>% mutate(wt.neg = 1/n()) %>%
-    ungroup()
-  
-  if (includeMatched) {
-    result$weightedMatchedData = matched
-  }
-  
-  # https://ete-online.biomedcentral.com/articles/10.1186/s12982-017-0060-8
-  # TODO: explain weighing modification to pairwise matched HR calculation to account for over-matching
-  PLME_HR = matches %>% 
-    mutate(
-      weightedG = ifelse(time.neg < time.pos & status.neg==1, wt.neg, 0), 
-      weightedH = ifelse(time.pos < time.neg & status.pos==1, wt.pos, 0),
-    ) %>%
-    summarise(
-      G=sum(weightedG),
-      H=sum(weightedH)
-    ) %>% mutate(
-      mean.HR = G/H,
-      mean.estimate = log(G/H),
-      mean.std.error = sqrt(1/G + 1/H),
-      mean.HR.lower = exp(mean.estimate-1.96*mean.std.error),
-      mean.HR.upper = exp(mean.estimate+1.96*mean.std.error),
-      mean.HR.pValue = pnorm(0,mean.estimate,mean.std.error),
-      model = "Weighted PLME HR",
-      term = "sGeneNegative"
-    )
-  
-  return(PLME_HR)
-}
+# runAnalysisQuick = function(
+#   coxData, sGeneCtThreshold = ctThreshold, ctThreshold=30, 
+#   ageTolerance = 3, specimenDateTolerance = 5,
+#   matchOn = c("sex","imd_decile","LTLA_name","ethnicity_final","ageCat"), #"residential_category"),
+#   max = 450000*450000, includeRaw=FALSE, includeMatched=FALSE
+# ) {
+#   result = list(params=tibble(
+#     sGeneCtThreshold = sGeneCtThreshold,
+#     ctThreshold = ctThreshold,
+#     ageTolerance = ageTolerance,
+#     specimenDateTolerance = specimenDateTolerance
+#   ))
+#   
+#   message("Interpreting data with CT threshold of S<",sGeneCtThreshold,":N<",ctThreshold,":ORF<",ctThreshold,
+#           "; tolerances - age=",ageTolerance,":specimen_date=",specimenDateTolerance)
+#   
+#   coxData3 = coxData %>% interpretSGene(S_CT = sGeneCtThreshold,N_CT = ctThreshold,ORF1ab_CT = ctThreshold)
+#   if (includeRaw) result$rawData = coxData3
+#   
+#   matches = coxData3 %>% createPairedMatches(ageTolerance = ageTolerance, specimenDateTolerance = specimenDateTolerance, matchOn = matchOn, max=max)
+#   
+#   rm(coxData3)
+#   
+#   # calculate a weighing for each side of each match based on frequecy
+#   matches = matches %>% 
+#     group_by(FINALID.pos) %>% mutate(wt.pos = 1/n()) %>%
+#     group_by(FINALID.neg) %>% mutate(wt.neg = 1/n()) %>%
+#     ungroup()
+#   
+#   if (includeMatched) {
+#     result$weightedMatchedData = matched
+#   }
+#   
+#   # https://ete-online.biomedcentral.com/articles/10.1186/s12982-017-0060-8
+#   # TODO: explain weighing modification to pairwise matched HR calculation to account for over-matching
+#   PLME_HR = matches %>% 
+#     mutate(
+#       weightedG = ifelse(time.neg < time.pos & status.neg==1, wt.neg, 0), 
+#       weightedH = ifelse(time.pos < time.neg & status.pos==1, wt.pos, 0),
+#     ) %>%
+#     summarise(
+#       G=sum(weightedG),
+#       H=sum(weightedH)
+#     ) %>% mutate(
+#       mean.HR = G/H,
+#       mean.estimate = log(G/H),
+#       mean.std.error = sqrt(1/G + 1/H),
+#       mean.HR.lower = exp(mean.estimate-1.96*mean.std.error),
+#       mean.HR.upper = exp(mean.estimate+1.96*mean.std.error),
+#       mean.HR.pValue = pnorm(0,mean.estimate,mean.std.error),
+#       model = "Weighted PLME HR",
+#       term = "sGeneNegative"
+#     )
+#   
+#   return(PLME_HR)
+# }
 
 
 
@@ -569,7 +595,10 @@ combineBootstraps = function(analysisResult) {
 
 prettyPrintSummary = function(summaryDf) {
   out = summaryDf %>% group_by(model,term) %>% summarise(
-    `Hazard rate (95% CI)`=sprintf("%1.1f (%1.1f \u2013 %1.1f)",mean.HR,mean.HR.lower,mean.HR.upper),
+    `Hazard rate (95% CI)`=sprintf("%1.1f (%1.1f \u2013 %1.1f)",
+                                   ifelse(mean.HR<10,mean.HR,Inf),
+                                   ifelse(mean.HR.lower<10,mean.HR.lower,Inf),
+                                   ifelse(mean.HR.upper<10,mean.HR.upper,Inf)),
     `p value`=scales::pvalue(mean.HR.pValue,0.001)) %>%
     mutate(
       Value = case_when(
@@ -577,6 +606,7 @@ prettyPrintSummary = function(summaryDf) {
         term %>% stringr::str_starts("sex") ~ term %>% stringr::str_remove("sex"),
         term %>% stringr::str_starts("imd_decile") ~ term %>% stringr::str_remove("imd_decile"),
         term %>% stringr::str_starts("ethnicity_final") ~ term %>% stringr::str_remove("ethnicity_final"),
+        term %>% stringr::str_starts("residential_category") ~ term %>% stringr::str_remove("residential_category"),
         TRUE~NA_character_),
       Predictor = case_when(
         term %>% stringr::str_starts("sGene")~"S gene status",
@@ -585,7 +615,8 @@ prettyPrintSummary = function(summaryDf) {
         term %>% stringr::str_starts("sex")~"Gender",
         term %>% stringr::str_starts("imd_decile")~"IMD",
         term %>% stringr::str_starts("ethnicity_final")~"Ethnicity",
-        TRUE~NA_character_
+        term %>% stringr::str_starts("residential_category")~"Residence",
+        TRUE~term
       ),
       Model = model) %>%
     ungroup() %>%
