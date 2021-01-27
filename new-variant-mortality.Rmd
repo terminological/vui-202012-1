@@ -83,6 +83,35 @@ run30none1to1$table4Data  %>% combineBootstraps() %>% prettyPrintSummary()
 run30none1to1$table2Data %>% filter(value == "Dead <28 days")
 
 ```
+### node sampling strategy
+
+```{r}
+
+run30nodeSample = runAnalysis(
+    coxData, sGeneCtThreshold = 30, ctThreshold = 30,
+    ageTolerance = 10,specimenDateTolerance=1,
+    modelFormula = models,resolutionStrategy = "node sample", bootstraps = 10)
+
+run30nodeSample$table4Data  %>% combineBootstraps() %>% prettyPrintSummary()
+run30nodeSample$table2Data %>% filter(value == "Dead <28 days")
+
+```
+
+### edge sampling strategy
+
+```{r}
+
+run30edgeSample = runAnalysis(
+    coxData, sGeneCtThreshold = 30, ctThreshold = 30,
+    ageTolerance = 10,specimenDateTolerance=1,
+    modelFormula = models,resolutionStrategy = "edge sample", bootstraps = 10)
+
+run30edgeSample$table4Data  %>% combineBootstraps() %>% prettyPrintSummary()
+run30edgeSample$table2Data %>% filter(value == "Dead <28 days")
+
+```
+
+###
 
 ```{r}
 models = list(

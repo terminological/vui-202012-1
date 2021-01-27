@@ -342,21 +342,76 @@ uniquifyPairs = function(pairedMatches, resolutionStrategy, bootstraps, ratio.ne
       group_by(FINALID.neg) %>% mutate(wt.neg=1/n()) %>%
       group_by(FINALID.pos) %>% mutate(wt.pos=1/n()) %>%
       ungroup()
+  } else if(resolutionStrategy == "edge sample") {
     
-  # } else if(resolutionStrategy == "node sample") {
-  #   
-  #   nodes = bind_rows( 
-  #     pairedMatches %>% select(FINALID = FINALID.neg) %>% mutate(side="neg"),
-  #     pairedMatches %>% select(FINALID = FINALID.pos) %>% mutate(side="pos"),
-  #   ) %>% distinct()
-  #   
-  #   nodes = nodes %>% mutate(rnd = runif(nrow(nodes)))
-  #   edges = pairedMatches %>% select(FINALID.neg,FINALID.pos) %>% 
-  #     inner_join(nodes %>% rename(rnd.neg = rnd), by=c("FINALID.neg"="FINALID")) %>%
-  #     inner_join(nodes %>% rename(rnd.pos = rnd), by=c("FINALID.pos"="FINALID")) %>%
-  #     mutate(rnd.pair = rnd.neg+rnd.pos) %>% arrange(rnd.pair)
-  #   
-  #   edges = edges %>% group_by(FINALID.neg) %>% mutate(chosen = ifelse(rnd.neg > rnd.pos,""))
+    # Get the edge list
+    # randomly select a single match out of possible matches for each bootstrap
+    set.seed(101)
+    matchesSelected = NULL
+    message("bootstrapping",appendLF = FALSE)
+    for(i in 1:bootstraps) {
+      message("..",i,appendLF = FALSE)
+      tmp = pairedMatches %>% ungroup() %>%
+        mutate(rnd = runif(nrow(pairedMatches)), wt.neg=1, wt.pos=1) %>% 
+        arrange(rnd) %>% # put the edges in a random order
+        group_by(FINALID.neg) %>% mutate(
+          chosen.neg = case_when(
+            row_number()==1 ~ "inc",
+            row_number()>1 ~ "exc",
+            TRUE ~ "unk")
+        ) %>% group_by(FINALID.pos) %>% mutate( 
+          chosen.pos = case_when(
+            row_number()==1 ~ "inc",
+            row_number()>1 ~ "exc",
+            TRUE ~ "unk")
+        ) %>% ungroup() %>% 
+        filter((chosen.neg=="inc" & chosen.pos!="exc") | (chosen.pos=="inc" & chosen.neg != "exc")) %>%
+        mutate(boot = i)
+      matchesSelected = bind_rows(matchesSelected,tmp)
+    }
+    message("..finished")
+    
+  } else if(resolutionStrategy == "node sample") {
+
+    # Get a list of unique nodes S+ and S- combinedd
+    nodes = bind_rows(
+      pairedMatches %>% select(FINALID = FINALID.neg),# %>% mutate(side="neg"),
+      pairedMatches %>% select(FINALID = FINALID.pos)# %>% mutate(side="pos"),
+    ) %>% distinct()
+
+    matchesSelected = NULL
+    set.seed(101)
+    message("bootstrapping",appendLF = FALSE)
+    for (i in 1:bootstraps) {
+      message("..",i,appendLF = FALSE)
+      # randomise node order
+      nodes = nodes %>% mutate(rnd = runif(nrow(nodes)))
+      # randomise edge order based on sum of node orders
+      edges = pairedMatches %>%
+        inner_join(nodes %>% rename(rnd.neg = rnd), by=c("FINALID.neg"="FINALID")) %>%
+        inner_join(nodes %>% rename(rnd.pos = rnd), by=c("FINALID.pos"="FINALID")) %>%
+        mutate(rnd.pair = rnd.neg+rnd.pos)
+  
+      # include or exclude edges
+      edges = edges  %>% arrange(rnd.pair) %>% group_by(FINALID.neg) %>% mutate(
+        chosen.neg = case_when(
+          rnd.neg > rnd.pos & row_number()==1 ~ "inc",
+          rnd.neg > rnd.pos & row_number()>1 ~ "exc",
+          TRUE ~ "unk")
+      ) %>% group_by(FINALID.pos) %>% mutate( 
+        chosen.pos = case_when(
+          rnd.pos > rnd.neg & row_number()==1 ~ "inc",
+          rnd.pos > rnd.neg & row_number()>1 ~ "exc",
+          TRUE ~ "unk")
+      ) %>% ungroup()
+      
+      edges = edges %>% filter((chosen.neg=="inc" & chosen.pos!="exc") | (chosen.pos=="inc" & chosen.neg != "exc"))
+      
+      matchesSelected = matchesSelected %>% bind_rows(edges %>% mutate(boot=i))
+    }
+    rm(nodes,edges)
+    message("..finished")
+    matchesSelected = matchesSelected %>% mutate(wt.neg=1,wt.pos=1)
     
   } else {
     stop("No such strategy: ",resolutionStrategy)
