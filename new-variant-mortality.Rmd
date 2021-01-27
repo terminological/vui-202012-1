@@ -70,55 +70,23 @@ if(!exists("coxData"))
 
 ## Main analysis
 
-### 1:1 strategy
+* We choose small tolerances for specimen date & larger for age.
+* The default model includes age as a covariate to adjust for mismatches in age. however matching is not biased by age.
 
 ```{r}
+defaultAgeTol = 5
+defaultSpecTol = 1
 
-run30none1to1 = runAnalysis(
-    coxData, sGeneCtThreshold = 30, ctThreshold = 30,
-    ageTolerance = 10,specimenDateTolerance=1,
-    modelFormula = models,resolutionStrategy = "none", filterExpr = mapType=="1:1")
+defaultModel = list(
+  `S gene + age` = Surv(time,status) ~ sGene+age,
+  `S gene + N gene CT`=Surv(time,status) ~ sGene+CT_N
+)
 
-run30none1to1$table4Data  %>% combineBootstraps() %>% prettyPrintSummary()
-run30none1to1$table2Data %>% filter(value == "Dead <28 days")
-
-```
-### node sampling strategy
-
-```{r}
-
-run30nodeSample = runAnalysis(
-    coxData, sGeneCtThreshold = 30, ctThreshold = 30,
-    ageTolerance = 10,specimenDateTolerance=1,
-    modelFormula = models,resolutionStrategy = "node sample", bootstraps = 10)
-
-run30nodeSample$table4Data  %>% combineBootstraps() %>% prettyPrintSummary()
-run30nodeSample$table2Data %>% filter(value == "Dead <28 days")
-
-```
-
-### edge sampling strategy
-
-```{r}
-
-run30edgeSample = runAnalysis(
-    coxData, sGeneCtThreshold = 30, ctThreshold = 30,
-    ageTolerance = 10,specimenDateTolerance=1,
-    modelFormula = models,resolutionStrategy = "edge sample", bootstraps = 10)
-
-run30edgeSample$table4Data  %>% combineBootstraps() %>% prettyPrintSummary()
-run30edgeSample$table2Data %>% filter(value == "Dead <28 days")
-
-```
-
-###
-
-```{r}
 models = list(
+  `S gene + age` = Surv(time,status) ~ sGene+age,
   `S gene only`=Surv(time,status) ~ sGene, 
   `S gene + N gene CT`=Surv(time,status) ~ sGene+CT_N, 
   `S gene + age + gender` = Surv(time,status) ~ sGene+age+sex,
-  `S gene + age` = Surv(time,status) ~ sGene+age,
   `S gene + all covariates` = Surv(time,status) ~ sGene+age+sex+imd_decile+ethnicity_final #+residential_category
 )
 
@@ -126,18 +94,21 @@ sGeneOnly = list(
   `S gene only`=Surv(time,status) ~ sGene
 )
 
-#if(!exists("run30")) 
+```
+
+## Central estimates
+
+* Selecting the node sampling strategy as above but with more bootstraps
+
+```{r}
+
+if(!exists("run30")) 
   run30 = runAnalysis(
     coxData, sGeneCtThreshold = 30, ctThreshold = 30,
-    ageTolerance = 5,specimenDateTolerance=1,
-    modelFormula = models,resolutionStrategy = "none",includeRaw=TRUE,includeMatched = TRUE)
-  # run30 = runAnalysis(
-  #   coxData, sGeneCtThreshold = 30, ctThreshold = 30,
-  #   bootstraps = 10,ageTolerance = 3,specimenDateTolerance=5,
-  #   modelFormula = models,
-  #   includeRaw=TRUE,includeMatched = TRUE)
-
-
+    ageTolerance = defaultAgeTol,specimenDateTolerance=defaultSpecTol,
+    modelFormula = defaultModel,resolutionStrategy = "node sample", bootstraps = 100,
+    includeRaw=FALSE,includeMatched = TRUE)
+  
 p1 = ggplot(run30$coxMatchedData, aes(x=time,colour=sGene,linetype=deathStatus))+geom_line(stat="count")+scale_y_log10()
 p2 = ggplot(run30$coxMatchedData %>% filter(status==0),aes(x=time,colour=sGene))+ stat_ecdf(geom = "step")+ylab("P(censored before t|censored)")
 p3 = ggplot(run30$coxMatchedData %>% filter(status==1),aes(x=time,colour=sGene))+ stat_ecdf(geom = "step")+ylab("P(died before t|died)")
@@ -145,20 +116,6 @@ p3 = ggplot(run30$coxMatchedData %>% filter(status==1),aes(x=time,colour=sGene))
 p1+p2+p3+patchwork::plot_annotation(tag_levels = "A")+patchwork::plot_layout(guides="collect")
 rm(p1,p2,p3)
 ```
-
-## Pair matching
-
-```{r}
-
-tmp = run30$pairedMatchedUnfilteredData %>% group_by(order.neg,order.pos) %>% summarise(n=n(), meanDate = mean((as.numeric(specimen_date.neg)+as.numeric(specimen_date.pos)/2)))
-midpoint = as.numeric((min(tmp$meanDate))+as.numeric(max(tmp$meanDate)))/2
-ggplot(tmp,aes(x=order.neg,y=order.pos,fill=n)) + geom_tile()# +geom_label()
-ggplot(tmp %>% filter(order.neg<11,order.pos<11), aes(x=order.neg,y=order.pos,fill=n,label=n)) + geom_tile() +geom_text(colour="white")
-ggplot(tmp, aes(x=order.neg,y=order.pos,fill=as.numeric(meanDate),label=n)) + geom_tile()+scale_fill_gradient2(low="purple",high="green",mid="yellow",midpoint = midpoint)
-```
-
-
-
 
 
 ### Median sample KM curve
@@ -175,7 +132,7 @@ if(spo) {
 } else {
   fig1
 }
-# rm(ggs,kmfit,fig1,tmp)
+rm(ggs,kmfit,fig1,tmp)
 ```
 ### Summary table
 
@@ -201,24 +158,10 @@ if(spo) {
 }
 
 ```
-## Do we need to do a full model of all covariates?
-
-* Even though we have in theory controlled for them all
-* Output generally shows that we don;t need it.
-
-```{r}
-
-tmp = bootstrappedCoxModel(run30$coxMatchedData, "Full model", Surv(time,status) ~ sGene+age+sex+imd_decile+CT_N)
-tmp %>% combineBootstraps() %>% prettyPrintSummary()
-
-```
-
 
 ## Biases in matched data set
 
 ```{r}
-#ggplot(summaryAgeTol,aes(x=ageTolerance,y=mean.ageDifference))+geom_bar(stat="identity")
-
 ## Check for residual biases in case matched data set ----
 # small mean age difference and specimen date difference
 # no obvious pattern in admission delays
@@ -256,94 +199,20 @@ if(spo) {
 }
 ```
 
-## 
-
-```{r}
-run30$params
-run30$table4Data  %>% combineBootstraps() %>% prettyPrintSummary()
-run30$table5Data  %>% combineBootstraps() %>% prettyPrintSummary()
-
-
-run30$pairedMatchedUnfilteredData %>% nrow()
-run30$pairedMatchedUnfilteredData %>% distinct(FINALID.neg, FINALID.pos) %>% nrow()
-
-run30drop = runAnalysis(
-    coxData, sGeneCtThreshold = 30, ctThreshold = 30,
-    bootstraps = 10,ageTolerance = 3,specimenDateTolerance=5,
-    modelFormula = sGeneOnly,resolutionStrategy = "drop",ratio.neg=1,ratio.pos=1)
-
-run30drop$table4Data  %>% combineBootstraps() %>% prettyPrintSummary()
-run30drop$table5Data  %>% combineBootstraps() %>% prettyPrintSummary()
-
-run30none = runAnalysis(
-    coxData, sGeneCtThreshold = 30, ctThreshold = 30,
-    ageTolerance = 1,specimenDateTolerance=1,
-    modelFormula = models,resolutionStrategy = "none")
-
-run30none$table4Data  %>% combineBootstraps() %>% prettyPrintSummary()
-run30none$table5Data  %>% combineBootstraps() %>% prettyPrintSummary()
-
-run30noneNot1to1 = runAnalysis(
-    coxData, sGeneCtThreshold = 30, ctThreshold = 30,
-    ageTolerance = 2,specimenDateTolerance=4,
-    modelFormula = models,resolutionStrategy = "none", filterExpr = mapType!="1:1")
-run30noneNot1to1$table4Data  %>% combineBootstraps() %>% prettyPrintSummary()
-
-run30noneNot1to1 = runAnalysis(
-    coxData, sGeneCtThreshold = 30, ctThreshold = 30,
-    ageTolerance = 2,specimenDateTolerance=4,
-    modelFormula = models,resolutionStrategy = "none", filterExpr = mapType=="1:1")
-run30noneNot1to1$table4Data  %>% combineBootstraps() %>% prettyPrintSummary()
-
-
-run30drop2 = runAnalysis(
-    coxData, sGeneCtThreshold = 30, ctThreshold = 30,
-    bootstraps = 10,ageTolerance = 10,specimenDateTolerance=1,
-    modelFormula = models,resolutionStrategy = "drop",ratio.neg=1:2,ratio.pos=1:2)
-
-run30drop2$table4Data  %>% combineBootstraps() %>% prettyPrintSummary()
-run30drop2$table5Data  %>% combineBootstraps() %>% prettyPrintSummary()
-
-
-run30drop3 = runAnalysis(
-    coxData, sGeneCtThreshold = 30, ctThreshold = 30,
-    bootstraps = 10,ageTolerance = 3,specimenDateTolerance=5,
-    modelFormula = sGeneOnly,resolutionStrategy = "drop",ratio.neg=1,ratio.pos=3)
-run30drop3$table4Data  %>% combineBootstraps() %>% prettyPrintSummary()
-
-
-run30none2 = runAnalysis(
-    coxData, sGeneCtThreshold = 30, ctThreshold = 30,
-    bootstraps = 10,ageTolerance = 10,specimenDateTolerance=1,
-    modelFormula = models,resolutionStrategy = "none")
-
-run30none2$table4Data  %>% combineBootstraps() %>% prettyPrintSummary()
-
-
-run30none1to1 = runAnalysis(
-    coxData, sGeneCtThreshold = 30, ctThreshold = 30,
-    ageTolerance = 10,specimenDateTolerance=1,
-    modelFormula = models,resolutionStrategy = "none", filterExpr = mapType=="1:1")
-run30none1to1$table4Data  %>% combineBootstraps() %>% prettyPrintSummary()
-
-run30drop1to1 = runAnalysis(
-    coxData, sGeneCtThreshold = 30, ctThreshold = 30,
-    bootstraps = 10,ageTolerance = 10,specimenDateTolerance=1,
-    modelFormula = models,resolutionStrategy = "drop",ratio.neg=1,ratio.pos=1)
-
-run30drop1to1$table4Data  %>% combineBootstraps() %>% prettyPrintSummary()
-
-
-```
-
 ## Sensitivity analysis
 
 ```{r}
 
+runAnalysis(
+    coxData, sGeneCtThreshold = 30, ctThreshold = 30,
+     bootstraps = 100,
+    includeRaw=FALSE,includeMatched = TRUE)
+
 if (!exists("summaryCT")) {
   summaryCT = NULL
   for(ct in seq(20,35,1)) {
-    run = runAnalysis(coxData, ctThreshold = ct,bootstraps = 25,max=Inf)
+    run = runAnalysis(coxData, ctThreshold = ct,bootstraps = 25,max=Inf,ageTolerance = defaultAgeTol,specimenDateTolerance=defaultSpecTol,
+    modelFormula = sGeneOnly,resolutionStrategy = "node sample")
     summaryCT = summaryCT %>% bind_rows(summariseAnalysisRun(run))
   }
 }
@@ -357,7 +226,8 @@ p1 = ggplot(summaryCT %>% filter(model=="S gene only"), aes(x=ctThreshold, y=mea
 if (!exists("summaryDateTol")) {
   summaryDateTol = NULL
   for(dateTol in c(0:14)) {
-    run = runAnalysis(coxData, specimenDateTolerance = dateTol,bootstraps = 25)
+    run = runAnalysis(coxData, specimenDateTolerance = dateTol,bootstraps = 25,ageTolerance = defaultAgeTol,
+    modelFormula = sGeneOnly,resolutionStrategy = "node sample")
     summaryDateTol = summaryDateTol %>% bind_rows(summariseAnalysisRun(run))
   }
 }
@@ -376,7 +246,8 @@ p4 = ggplot(summaryDateTol %>% filter(model=="S gene only"),aes(x=specimenDateTo
 if (!exists("summaryAgeTol")) {
   summaryAgeTol = NULL
   for(ageTol in c(0,1,2,3,4,5,6,7,8,9)) {
-    run = runAnalysis(coxData, ageTolerance = ageTol,bootstraps = 25)
+    run = runAnalysis(coxData, ageTolerance = ageTol,bootstraps = 25,specimenDateTolerance=defaultSpecTol,
+    modelFormula = sGeneOnly,resolutionStrategy = "node sample")
     summaryAgeTol = summaryAgeTol %>% bind_rows(summariseAnalysisRun(run))
   }
 }

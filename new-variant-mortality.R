@@ -198,8 +198,8 @@ loadData = function(dir="~/Data/new-variant",date="20210118", censorLength = 28,
     ) %>% filter(age >= minAge)
   
   tmpCox = coxData2 %>% interpretSGene()
-  tmpCox %>% filter(sGene=="Negative") %>% nrow() %>% message(" S- cases eligable for inclusion")
-  tmpCox %>% filter(sGene=="Positive") %>% nrow() %>% message(" S+ controls eligable for inclusion")
+  tmpCox %>% filter(sGene=="Negative") %>% nrow() %>% message(" S- cases eligible for inclusion")
+  tmpCox %>% filter(sGene=="Positive") %>% nrow() %>% message(" S+ controls eligible for inclusion")
   
   ## quality control
   if (any(is.na(coxData2$LTLA_name))) stop("unknowns for LTLA")
@@ -209,7 +209,8 @@ loadData = function(dir="~/Data/new-variant",date="20210118", censorLength = 28,
 
 ## Analysis functions: ----
 
-# function to help interpret S gene N gene and ORF gene in 
+# function to help interpret S gene CT values in context of N gene and ORF gene to give S gene status. 
+# With the defaults this produces the same result as the sgtf_30 column in the sounrge SGTF line list
 interpretSGene = function(sGeneLineList, S_CT = 30, ORF1ab_CT = 30, N_CT = 30, Control_CT = Inf) {
   sGeneLineList %>% mutate(
     ORF1ab_CT_threshold = ORF1ab_CT,
@@ -299,6 +300,7 @@ uniquifyPairs = function(pairedMatches, resolutionStrategy, bootstraps, ratio.ne
   message("Before sampling the matched set contains ",n_distinct(pairedMatches$FINALID.neg)," unique S gene negatives and ",n_distinct(pairedMatches$FINALID.pos)," unique S gene positives")
   
   if (resolutionStrategy == "bootstrap") {
+    warning("This option is here for legacy purposes. It is superceded by the edge sample option which does what this shoudl have done")
     # TODO: I am not sure if there is a risk here of a systematic bias, or at least a random bias that is systematically present
     # throughout the analysis.
     # What happens here is the majority of matches are 1:1 and will always be picked in each bootstrap.
@@ -314,7 +316,7 @@ uniquifyPairs = function(pairedMatches, resolutionStrategy, bootstraps, ratio.ne
     for(i in 1:bootstraps) {
       message("..",i,appendLF = FALSE)
       tmp = pairedMatches %>% ungroup() %>%
-        mutate(rnd = runif(nrow(pairedMatches)), wt.neg=1, wt.pos=1) %>% 
+        mutate(rnd = runif(nrow(pairedMatches))) %>% 
         arrange(rnd) %>% # put the dataset in a random order
         group_by(FINALID.neg) %>% filter(row_number()==1) %>% # filter out a single matching at random from pos to neg
         group_by(FINALID.pos) %>% filter(row_number()==1) %>%  # filter out a single matching at random from neg to pos
@@ -329,19 +331,17 @@ uniquifyPairs = function(pairedMatches, resolutionStrategy, bootstraps, ratio.ne
     message("..finished")
     
   } else if(resolutionStrategy == "drop") {
-    # drop all pairs which have more than one match
+    # drop all pairs where the order of the S negs is one of ratio.neg 
     matchesSelected = pairedMatches %>%
       filter(order.pos %in% ratio.pos) %>%
       filter(order.neg %in% ratio.neg) %>%
       ungroup() %>%
-      mutate(boot=1, wt.neg=1, wt.pos=1)
+      mutate(boot=1)
   
   } else if(resolutionStrategy == "none") {
     # ignore duplicates
-    matchesSelected = pairedMatches %>% mutate(boot=1) %>%
-      group_by(FINALID.neg) %>% mutate(wt.neg=1/n()) %>%
-      group_by(FINALID.pos) %>% mutate(wt.pos=1/n()) %>%
-      ungroup()
+    matchesSelected = pairedMatches %>% mutate(boot=1) %>% ungroup()
+    
   } else if(resolutionStrategy == "edge sample") {
     
     # Get the edge list
@@ -351,21 +351,20 @@ uniquifyPairs = function(pairedMatches, resolutionStrategy, bootstraps, ratio.ne
     message("bootstrapping",appendLF = FALSE)
     for(i in 1:bootstraps) {
       message("..",i,appendLF = FALSE)
+      
       tmp = pairedMatches %>% ungroup() %>%
-        mutate(rnd = runif(nrow(pairedMatches)), wt.neg=1, wt.pos=1) %>% 
-        arrange(rnd) %>% # put the edges in a random order
+        # randomly order the pairs
+        mutate(ordering = sample.int(n=nrow(pairedMatches))) %>% 
+        # include only the first of each of the S negs. excluding all others, essentially removing duplicates.
         group_by(FINALID.neg) %>% mutate(
-          chosen.neg = case_when(
-            row_number()==1 ~ "inc",
-            row_number()>1 ~ "exc",
-            TRUE ~ "unk")
-        ) %>% group_by(FINALID.pos) %>% mutate( 
-          chosen.pos = case_when(
-            row_number()==1 ~ "inc",
-            row_number()>1 ~ "exc",
-            TRUE ~ "unk")
+          chosen.neg = ifelse(ordering==min(ordering), "inc", "exc")
+        ) %>% 
+        # include only the first of each of the S pos. excluding all others, essentially removing duplicates.
+        group_by(FINALID.pos) %>% mutate( 
+          chosen.pos = ifelse(ordering==min(ordering), "inc", "exc")
         ) %>% ungroup() %>% 
-        filter((chosen.neg=="inc" & chosen.pos!="exc") | (chosen.pos=="inc" & chosen.neg != "exc")) %>%
+        # pick the first matches of both. This will pick out a pair if both ends are ranked low.
+        filter((chosen.neg=="inc" & chosen.pos=="inc")) %>%
         mutate(boot = i)
       matchesSelected = bind_rows(matchesSelected,tmp)
     }
@@ -373,45 +372,82 @@ uniquifyPairs = function(pairedMatches, resolutionStrategy, bootstraps, ratio.ne
     
   } else if(resolutionStrategy == "node sample") {
 
-    # Get a list of unique nodes S+ and S- combinedd
+    # Get a list of unique nodes S+ and S- combined
     nodes = bind_rows(
       pairedMatches %>% select(FINALID = FINALID.neg),# %>% mutate(side="neg"),
       pairedMatches %>% select(FINALID = FINALID.pos)# %>% mutate(side="pos"),
     ) %>% distinct()
-
+    
+    # initialise bootstrapping loop
     matchesSelected = NULL
     set.seed(101)
     message("bootstrapping",appendLF = FALSE)
     for (i in 1:bootstraps) {
       message("..",i,appendLF = FALSE)
-      # randomise node order
-      nodes = nodes %>% mutate(rnd = runif(nrow(nodes)))
-      # randomise edge order based on sum of node orders
-      edges = pairedMatches %>%
-        inner_join(nodes %>% rename(rnd.neg = rnd), by=c("FINALID.neg"="FINALID")) %>%
-        inner_join(nodes %>% rename(rnd.pos = rnd), by=c("FINALID.pos"="FINALID")) %>%
-        mutate(rnd.pair = rnd.neg+rnd.pos)
-  
-      # include or exclude edges
-      edges = edges  %>% arrange(rnd.pair) %>% group_by(FINALID.neg) %>% mutate(
-        chosen.neg = case_when(
-          rnd.neg > rnd.pos & row_number()==1 ~ "inc",
-          rnd.neg > rnd.pos & row_number()>1 ~ "exc",
-          TRUE ~ "unk")
-      ) %>% group_by(FINALID.pos) %>% mutate( 
-        chosen.pos = case_when(
-          rnd.pos > rnd.neg & row_number()==1 ~ "inc",
-          rnd.pos > rnd.neg & row_number()>1 ~ "exc",
-          TRUE ~ "unk")
-      ) %>% ungroup()
+      #browser()
       
-      edges = edges %>% filter((chosen.neg=="inc" & chosen.pos!="exc") | (chosen.pos=="inc" & chosen.neg != "exc"))
+      # We are picking nodes at random from the whole set of possible nodes regardless of Sneg or Spos status
+      # all we are doing here is assigning a random order to the node list
+      nodes = nodes %>% mutate(ordering = sample.int(n=nrow(nodes)))
       
-      matchesSelected = matchesSelected %>% bind_rows(edges %>% mutate(boot=i))
+      # create a directed edge list for this ordered set of nodes
+      # by making an undirected edgelist and picking only edges that go from lower to higher in rank order
+      # This duplicates the edges by adding in the reverse direction
+      edges = bind_rows( 
+          pairedMatches %>% select(FINALID.source = FINALID.neg, FINALID.target = FINALID.pos) %>% mutate(direction="neg->pos"),
+          pairedMatches %>% select(FINALID.source = FINALID.pos, FINALID.target = FINALID.neg) %>% mutate(direction="pos->neg")
+        )
+      
+      # Assign the node rank to both sides of the edge
+      edges = edges %>%
+        inner_join(nodes %>% rename(ordering.source=ordering), by=c("FINALID.source"="FINALID")) %>%
+        inner_join(nodes %>% rename(ordering.target=ordering), by=c("FINALID.target"="FINALID")) 
+      
+      # This filter de-duplicates the edges and creates an directed graph. from source to target (source can be S- or S+)
+      edges = edges %>%
+        filter(ordering.source < ordering.target) 
+      
+      # Iteratively select edges for removal from edgelist
+      output = NULL
+      while( nrow(edges) > 0) {
+        # for every FINALID.source(==ordering.source) pick out the first edge target combination
+        # i.e. for every source pick edges where the target is the lowest rank entry for a given source (i.e. the first one)
+        selected = edges %>% group_by(ordering.source) %>% filter(ordering.target == min(ordering.target))
+        # if an edge is selected its target cannot be a source of another edge, so deselect any where this happens
+        # this also takes care of the reverse situation where the source of one edge is the target of another edge.
+        # but this is also prevented by the filter which removes edges with source > target
+        selected = selected %>% anti_join(selected, by=c("ordering.source" = "ordering.target"))
+        # there are also situation where we have selected the same target for multiple sources.
+        # in this case we want to select only the highest ranked source
+        selected = selected %>% group_by(ordering.target) %>% filter(ordering.source == min(ordering.source))
+        # the selection is guaranteed to have distinct sources and targets
+        if(any(duplicated(selected$FINALID.source)) | any(duplicated(selected$FINALID.target))) stop("Aargh...")
+        # take all edges containing any selected source or target nodes away from edges.
+        edges = edges %>% 
+          # remove selected source nodes from edge list
+          anti_join(selected, by=c("ordering.source")) %>% 
+          # remove selected target nodes that are sources in the edge list
+          anti_join(selected, by=c("ordering.source"="ordering.target")) %>%
+          # remove selected target nodes from edge list
+          anti_join(selected, by=c("ordering.target")) %>% 
+          # remove selected source nodes that are targets in the edge list
+          anti_join(selected, by=c("ordering.target"="ordering.source"))
+          
+        if (nrow(selected)==0) break #lets hope this doesn't happen if it does we just probably have to abort
+        output = output %>% bind_rows(selected)
+      }
+      #output now has edgelist of selected edges in it but the source and targets need to be mapped back to original order
+      output = output %>% mutate(
+        FINALID.neg = ifelse(direction == "neg->pos", FINALID.source, FINALID.target),
+        FINALID.pos = ifelse(direction == "pos->neg", FINALID.source, FINALID.target)
+      )
+      # selected output rows from pairedMatches
+      thisIteration = pairedMatches %>% semi_join(output,by=c("FINALID.neg","FINALID.pos")) %>% mutate(boot=i)
+      matchesSelected = matchesSelected %>% bind_rows(thisIteration)
     }
     rm(nodes,edges)
     message("..finished")
-    matchesSelected = matchesSelected %>% mutate(wt.neg=1,wt.pos=1)
+    
     
   } else {
     stop("No such strategy: ",resolutionStrategy)
@@ -434,8 +470,8 @@ pairedMatchesToCoxData = function(matches, matchOn, filterExpr = NULL) {
 
 runAnalysis = function(
     coxData, sGeneCtThreshold = ctThreshold, ctThreshold=30, 
-    bootstraps=10, ageTolerance = 3, specimenDateTolerance = 5,
-    modelFormula = list(`S gene only`=Surv(time,status) ~ sGene),
+    bootstraps=10, ageTolerance = 5, specimenDateTolerance = 1,
+    modelFormula = list(`S gene + age`=Surv(time,status) ~ sGene+age),
     max = 450000*450000, includeRaw=FALSE, includeMatched=FALSE,
     matchOn = c("sex","imd_decile","LTLA_name","ethnicity_final","ageCat"), #,"residential_category"),
     resolutionStrategy = "none",ratio.neg=1,ratio.pos=1,filterExpr=NULL
@@ -459,11 +495,11 @@ runAnalysis = function(
   browser
   # make a set of matched pairs
   matches = coxData3 %>% createPairedMatches(ageTolerance = ageTolerance, specimenDateTolerance = specimenDateTolerance, matchOn = matchOn, max=max)
-  if (includeMatched) result$pairedMatchedUnfilteredData = matches
+  if (includeRaw) result$pairedMatchedUnfilteredData = matches
   
   # resolve duplicates in matched pairs
   matchesSelected = matches %>% uniquifyPairs(resolutionStrategy=resolutionStrategy, bootstraps = bootstraps, ratio.neg=ratio.neg, ratio.pos=ratio.pos)
-  if (includeMatched) result$pairedMatchedData = matchesSelected
+  if (includeRaw) result$pairedMatchedData = matchesSelected
   
   # prepare data for cox PH models
   coxFinal = matchesSelected %>% pairedMatchesToCoxData(matchOn = matchOn, filter=!!filterExpr) %>% 
@@ -486,17 +522,15 @@ runAnalysis = function(
   # this implements a paired data direct measure of hazard rate
   
   if(nrow(posMatched) == nrow(negMatched)) {
-    message("Paired data hazard rate can be calculated as data is 1:1")
+    message("Paired data hazard rate can be directly calculated as data is 1:1")
     result$table5Data = matchesSelected %>% group_by(boot) %>% group_modify(function(d,g,...) {
       tibble(
-        model = c("Unweighted PLME HR","Weighted PLME HR"),
+        model = c("PLME HR"),
         G= c(
-          d %>% filter(time.neg < time.pos & status.neg==1) %>% nrow(),
-          d %>% filter(time.neg < time.pos & status.neg==1) %>% summarise(G = sum(wt.neg)) %>% pull(G)
+          d %>% filter(time.neg < time.pos & status.neg==1) %>% nrow()
         ),
         H=c(
-          d %>% filter(time.pos < time.neg & status.pos==1) %>% nrow(),
-          d %>% filter(time.pos < time.neg & status.pos==1) %>% summarise(H = sum(wt.pos)) %>% pull(H)
+          d %>% filter(time.pos < time.neg & status.pos==1) %>% nrow()
         )
       ) %>% mutate(
         HR = G/H,
