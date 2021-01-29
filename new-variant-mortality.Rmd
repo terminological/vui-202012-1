@@ -94,6 +94,10 @@ sGeneOnly = list(
   `S gene only`=Surv(time,status) ~ sGene
 )
 
+sGeneAge = list(
+  `S gene + age` = Surv(time,status) ~ sGene+age
+)
+
 ```
 
 ## Central estimates
@@ -121,7 +125,7 @@ rm(p1,p2,p3)
 ### Median sample KM curve
 
 ```{r}
-tmp = run30none$table4Data %>% filter(model=="S gene only") %>% group_by(boot) %>% summarise(mean.HR = mean(HR)) %>% ungroup() 
+tmp = run30$table4Data %>% filter(model=="S gene + age") %>% group_by(boot) %>% summarise(mean.HR = mean(HR)) %>% ungroup() 
 middleBoot = which.min(abs(tmp$mean.HR-median(tmp$mean.HR)))
 kmfit = survminer::surv_fit(Surv(time,status) ~ sGene, run30$coxMatchedData %>% filter(boot==middleBoot))
 ggs = survminer::ggsurvplot(kmfit, conf.int = TRUE)
@@ -203,22 +207,20 @@ if(spo) {
 
 ```{r}
 
-runAnalysis(
-    coxData, sGeneCtThreshold = 30, ctThreshold = 30,
-     bootstraps = 100,
-    includeRaw=FALSE,includeMatched = TRUE)
-
 if (!exists("summaryCT")) {
   summaryCT = NULL
   for(ct in seq(20,35,1)) {
-    run = runAnalysis(coxData, ctThreshold = ct,bootstraps = 25,max=Inf,ageTolerance = defaultAgeTol,specimenDateTolerance=defaultSpecTol,
-    modelFormula = sGeneOnly,resolutionStrategy = "node sample")
+    run = runAnalysis(coxData, ctThreshold = ct,bootstraps = 10,max=Inf,ageTolerance = defaultAgeTol,specimenDateTolerance=defaultSpecTol,
+    modelFormula = sGeneAge,resolutionStrategy = "node sample")
     summaryCT = summaryCT %>% bind_rows(summariseAnalysisRun(run))
   }
 }
-p1 = ggplot(summaryCT %>% filter(model=="S gene only"), aes(x=ctThreshold, y=mean.HR,ymin=mean.HR.lower,ymax=mean.HR.upper))+geom_point()+geom_errorbar()+xlab("CT threshold")+ylab("Hazard rate")#+
+p1 = ggplot(summaryCT %>% filter(model=="S gene + age" & term == "sGeneNegative"), aes(x=ctThreshold, y=mean.HR,ymin=mean.HR.lower,ymax=mean.HR.upper))+geom_point(colour="red")+geom_errorbar(colour="red")+xlab("CT threshold")+ylab("Hazard rate")+
   #geom_smooth(method = "lm",formula = y ~ poly(x, 2),se=TRUE,alpha=0.5)
-  #geom_smooth(method = "lm",se=TRUE,alpha=0.5)
+  #geom_smooth(method = "lm",se=TRUE,alpha=0.5)+
+  coord_cartesian(ylim=c(0.5,3))+
+  gghighlight::gghighlight(ctThreshold==30,unhighlighted_params = list(colour = "black"))
+
 
 ```
 
@@ -226,18 +228,20 @@ p1 = ggplot(summaryCT %>% filter(model=="S gene only"), aes(x=ctThreshold, y=mea
 if (!exists("summaryDateTol")) {
   summaryDateTol = NULL
   for(dateTol in c(0:14)) {
-    run = runAnalysis(coxData, specimenDateTolerance = dateTol,bootstraps = 25,ageTolerance = defaultAgeTol,
-    modelFormula = sGeneOnly,resolutionStrategy = "node sample")
+    run = runAnalysis(coxData, specimenDateTolerance = dateTol,bootstraps = 10,ageTolerance = defaultAgeTol,
+    modelFormula = sGeneAge,resolutionStrategy = "node sample")
     summaryDateTol = summaryDateTol %>% bind_rows(summariseAnalysisRun(run))
   }
 }
 
-p2 = ggplot(summaryDateTol %>% filter(model=="S gene only"), aes(x=specimenDateTolerance, y=mean.HR,ymin=mean.HR.lower,ymax=mean.HR.upper))+geom_point()+geom_errorbar()+xlab("Mismatch tolerance - sample date (days)")+ylab("Hazard rate")+
+p2 = ggplot(summaryDateTol %>% filter(model=="S gene + age" & term == "sGeneNegative"), aes(x=specimenDateTolerance, y=mean.HR,ymin=mean.HR.lower,ymax=mean.HR.upper))+geom_point(colour="red")+geom_errorbar(colour="red")+xlab("Mismatch tolerance - sample date (days)")+ylab("Hazard rate")+
   #geom_smooth(method = "lm",formula = y ~ poly(x, 2),se=TRUE,alpha=0.5)
   #geom_smooth(method = "lm",se=TRUE,alpha=0.5)+
-  scale_x_continuous(breaks = c(0,7,14))
+  scale_x_continuous(breaks = c(0,7,14))+
+  coord_cartesian(ylim=c(0.5,3))+
+  gghighlight::gghighlight(specimenDateTolerance==defaultSpecTol,unhighlighted_params = list(colour = "black"))
 
-p4 = ggplot(summaryDateTol %>% filter(model=="S gene only"),aes(x=specimenDateTolerance,y=mean.specimenDateDifference))+geom_bar(stat="identity", width=0.7, fill="steelblue") + 
+p4 = ggplot(summaryDateTol %>% filter(model=="S gene + age" & term == "sGeneNegative"),aes(x=specimenDateTolerance,y=mean.specimenDateDifference))+geom_bar(stat="identity", width=0.7, fill="steelblue") + 
   xlab("Mismatch tolerance - sample date (days)")+ylab("Pairwise bias (days)")+scale_x_continuous(breaks = c(0,7,14))
 
 ```
@@ -246,16 +250,18 @@ p4 = ggplot(summaryDateTol %>% filter(model=="S gene only"),aes(x=specimenDateTo
 if (!exists("summaryAgeTol")) {
   summaryAgeTol = NULL
   for(ageTol in c(0,1,2,3,4,5,6,7,8,9)) {
-    run = runAnalysis(coxData, ageTolerance = ageTol,bootstraps = 25,specimenDateTolerance=defaultSpecTol,
-    modelFormula = sGeneOnly,resolutionStrategy = "node sample")
+    run = runAnalysis(coxData, ageTolerance = ageTol,bootstraps = 10,specimenDateTolerance=defaultSpecTol,
+    modelFormula = sGeneAge,resolutionStrategy = "node sample")
     summaryAgeTol = summaryAgeTol %>% bind_rows(summariseAnalysisRun(run))
   }
 }
 
-p3 = ggplot(summaryAgeTol %>% filter(model=="S gene only"), aes(x=ageTolerance, y=mean.HR,ymin=mean.HR.lower,ymax=mean.HR.upper))+geom_point()+geom_errorbar()+xlab("Mismatch tolerance - age (years)")+ylab("Hazard rate")+
+p3 = ggplot(summaryAgeTol %>% filter(model=="S gene + age" & term == "sGeneNegative"), aes(x=ageTolerance, y=mean.HR,ymin=mean.HR.lower,ymax=mean.HR.upper))+geom_point(colour="red")+geom_errorbar(colour="red")+xlab("Mismatch tolerance - age (years)")+ylab("Hazard rate")+
   #geom_smooth(method = "lm",formula = y ~ poly(x, 2),se=TRUE,alpha=0.5)
   #geom_smooth(method = "lm",se=TRUE,alpha=0.5)+
-  scale_x_continuous(breaks = c(0,3,6,9))
+  scale_x_continuous(breaks = c(0,3,6,9))+
+  coord_cartesian(ylim=c(0.5,3))+
+  gghighlight::gghighlight(ageTolerance==defaultAgeTol,unhighlighted_params = list(colour = "black"))
 ```
 
 ```{r}

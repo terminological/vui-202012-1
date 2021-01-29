@@ -156,8 +156,7 @@ loadData = function(dir="~/Data/new-variant",date="20210118", censorLength = 28,
       preB117 = specimen_date < B117Date
     )
   
-  # TODO: https://cran.r-project.org/web/packages/Gmisc/vignettes/Grid-based_flowcharts.html
-  # https://www.r-bloggers.com/2018/05/flow-charts-in-r/
+
   
   tmpCox = coxData2 %>% interpretSGene()
   tmpCox %>% filter(sGene=="Equivocal") %>% nrow() %>% message(" with equivocal results excluded")
@@ -445,7 +444,7 @@ uniquifyPairs = function(pairedMatches, resolutionStrategy, bootstraps, ratio.ne
       thisIteration = pairedMatches %>% semi_join(output,by=c("FINALID.neg","FINALID.pos")) %>% mutate(boot=i)
       matchesSelected = matchesSelected %>% bind_rows(thisIteration)
     }
-    rm(nodes,edges)
+    rm(nodes,edges,thisIteration,output,selected)
     message("..finished")
     
     
