@@ -77,51 +77,62 @@ p_copy = function(.data, from) {
 }
 
 # df %>% p_clear() %>% p_comment("test") %>% p_exclude(c%%2==0 ~ `excluding {count} even items`) %>% provenance()
-p_exclude = function(.data, ...) {
-  messages = NULL
-  filterList = NULL
+p_exclude = function(.data, ..., na.rm=FALSE, .headline="Exclude:") {
+  if (!identical(.headline,NULL)) {
+    messages = .data %>% group_data() %>% select(-.rows) %>% mutate(.message=.headline)
+  } else {
+    messages = NULL
+  }
+  grps = .data %>% groups()
+  default_env = rlang::caller_env()
+  filterList = rep(TRUE,nrow(.data))
   filters = rlang::list2(...)
   for(filter in filters) {
-    glueSpec = as.character(attr(terms(filter),"variables")[3])
-    filt = as.character(attr(terms(filter),"variables")[2])
-    message = .data %>% filter(eval(rlang::parse_expr(filt))) %>% summarise(count=n()) %>% mutate(.message = glue::glue(glueSpec))
-    messages = messages %>% bind_rows(message)
-    filterList = c(filterList,filt)
+    glueSpec = rlang::f_rhs(filter)
+    filt = rlang::f_lhs(filter)
+    filtBool = rlang::eval_tidy(filt, data=.data, env = default_env)
+    filtBool = ifelse(is.na(filtBool),na.rm,filtBool)
+    tmp = .data %>% ungroup() %>% filter(filtBool) %>% group_by(!!!grps) %>% summarise(count=n())
+    tmp$.message = rlang::eval_tidy(glue::glue_data(tmp,glueSpec,.envir = default_env), data=tmp, env = default_env)
+    messages = messages %>% bind_rows(tmp)
+    filterList = filterList & !filtBool
   }
-  filterList2 = unname(sapply(filterList, function(x) paste0("!(",x,")")))
-  out = .data %>% filter(!!!rlang::parse_exprs(filterList2)) %>% p_copy(.data) %>% p_comment(messages, type="exclusion")
+  #filterList2 = unname(sapply(filterList, function(x) paste0("!(",x,")")))
+  out = .data %>% ungroup() %>% filter(filterList) %>% group_by(!!!grps) %>% p_copy(.data) %>% p_comment(messages, type="exclusion")
   return(out)
 }
 
-
+# x = function() {filterCond = 1; df %>% p_clear() %>% p_status(c%%2==filterCond ~ `consisting of {count} even items+{filterCond}`,c%%2!=0 ~ `and {count} odd items+{filterCond}`) %>% provenance()}
+# x()
 # df %>% p_clear() %>% p_status(c%%2==0 ~ `consisting of {count} even items`,c%%2!=0 ~ `and {count} odd items`) %>% provenance()
-p_status = function(.data, ...) {
-  messages = NULL
+p_status = function(.data, ..., na.count=FALSE, .headline=NULL) {
+  if (!identical(.headline,NULL)) {
+    messages = .data %>% group_data() %>% select(-.rows) %>% mutate(.message=.headline)
+  } else {
+    messages = NULL
+  }
+  grps = .data %>% groups()
+  default_env = rlang::caller_env()
   filters = rlang::list2(...)
-  if(length(filters)==0) filters = list(TRUE ~ `{count} items`)
+  if(length(filters)==0) filters = list(TRUE ~ "{count} items")
   for(filter in filters) {
-    glueSpec = as.character(attr(terms(filter),"variables")[3])
-    filt = as.character(attr(terms(filter),"variables")[2])
-    message = .data %>% filter(eval(rlang::parse_expr(filt))) %>% summarise(count=n()) %>% mutate(.message = glue::glue(glueSpec))
-    messages = messages %>% bind_rows(message)
+    glueSpec = rlang::f_rhs(filter)
+    filt = rlang::f_lhs(filter)
+    filtBool = rlang::eval_tidy(filt, data=.data, env = default_env)
+    filtBool = ifelse(is.na(filtBool),!na.count,filtBool)
+    tmp = .data %>% ungroup() %>% filter(filtBool) %>% group_by(!!!grps) %>% summarise(count=n())
+    tmp$.message = rlang::eval_tidy(glue::glue_data(tmp,glueSpec,.envir = default_env), data=tmp, env = default_env)
+    messages = messages %>% bind_rows(tmp)
   }
   out = .data %>% p_comment(messages, type="summary")
   return(out)
 }
 
-# df %>% p_clear() %>% p_status(c%%2==0 ~ `consisting of {count} even items`,c%%2!=0 ~ `and {count} odd items`) %>% p_ungroup() %>% provenance()
+# df %>% p_clear() %>% p_status(c%%2==0 ~ "consisting of {count} even items",c%%2!=0 ~ "and {count} odd items") %>% p_ungroup() %>% provenance()
 p_ungroup = function(.data, ...) {
-  messages = NULL
   filters = rlang::list2(...)
-  if(length(filters)==0) filters = list(TRUE ~ `combining {count} items`)
-  out = .data %>% ungroup()
-  for(filter in filters) {
-    glueSpec = as.character(attr(terms(filter),"variables")[3])
-    filt = as.character(attr(terms(filter),"variables")[2])
-    message = out %>% filter(eval(rlang::parse_expr(filt))) %>% summarise(count=n()) %>% mutate(.message = glue::glue(glueSpec))
-    messages = messages %>% bind_rows(message)
-  }
-  out = out %>% p_copy(.data) %>% p_comment(messages, type="summary")
+  if(length(filters)==0) filters = list(TRUE ~ "totalling {count} items")
+  out = .data %>% ungroup() %>% p_copy(.data) %>% p_status(!!!filters)
   return(out)
 }
 
@@ -135,8 +146,7 @@ p_summarise = function(.data, ..., .message = NULL) {
 
 # df %>% p_clear() %>% p_comment("test") %>% p_mutate(.message = "add date",d = 123) %>% p_comment("test 2") %>% provenance()
 p_mutate = function(.data, ..., .message = NULL) {
-  dots = rlang::list2(...)
-  out = .data %>% mutate(!!!dots)
+  out = .data %>% mutate(...)
   out = out %>% p_copy(.data) 
   if (!identical(.message,NULL)) out = out %>% p_comment(.message, "modify")
   return(out)
@@ -151,10 +161,27 @@ p_group_by = function(.data, col, .message = NULL) {
   return(tmp)
 }
 
-p_modify = function(.data, dplyrFn, .message=NULL) {
+p_select = function(.data, ...) {
+  out = .data %>% select(...) %>% p_copy(.data)
+  return(out)
+}
+
+# df %>% ungroup() %>% p_clear() %>% p_modify(function(d) { d %>% filter(c==2) }, .message="was {count.in}, now {count.out}") %>% provenance()
+p_modify = function(.data, dplyrFn, .message=NULL, .headline=NULL) {
+  env = rlang::caller_env()
   out = dplyrFn(.data)
   out = out %>% p_copy(.data)
-  if (!identical(.message,NULL)) out = out %>% p_comment(.message, "modify")
+  count.in = .data %>% nrow()
+  count.out = out %>% nrow()
+  message=NULL
+  if (!identical(.headline,NULL)) {
+    message = c(message,glue::glue(.headline,.envir = env))
+  }
+  if (!identical(.message,NULL)) {
+    message = c(message,glue::glue(.message))
+  }
+  if (!identical(message,NULL)) {out = out %>% p_comment(paste0(message,collapse="\n"), "modify")}
+  return(out)
 }
 
 # TODO: https://cran.r-project.org/web/packages/Gmisc/vignettes/Grid-based_flowcharts.html
@@ -218,8 +245,8 @@ p_modify = function(.data, dplyrFn, .message=NULL) {
 # df %>% ungroup() %>% p_clear() %>% p_status() %>% p_group_by(a) %>% p_comment("test") %>% p_group_by(b) %>% p_comment("test 2") %>% p_status() %>% p_flowchart()
 p_flowchart = function(.data, filename = NULL, fill="lightgrey", fontsize="8", colour="black", ...) {
   
-  nodesDf = tibble()
-  edgesDf = tibble()
+  nodesDf = tibble(id=integer(),label=character(),type=character())
+  edgesDf = tibble(id=integer(),to=integer(),from=integer(),rel=character())
   .createNode = function(label, type) {
     id = nrow(nodesDf)+1
     nodesDf <<- nodesDf %>% bind_rows(tibble(id = id, label=label, type=type))
@@ -257,7 +284,6 @@ p_flowchart = function(.data, filename = NULL, fill="lightgrey", fontsize="8", c
     }
     if (type != "exclusion") prevLevel = thisLevel
   }
-  browser()
   graph = DiagrammeR::create_graph(
     #graph [splines=ortho]
     nodes_df = nodesDf %>% mutate(
@@ -272,11 +298,26 @@ p_flowchart = function(.data, filename = NULL, fill="lightgrey", fontsize="8", c
       tailport="s",
       colour="black"
     ), attr_theme = "tb")
+  
   if (!identical(filename,NULL)) {
+    filename = filename %>% stringr::str_remove("\\..*$")
+    unlink(paste0(filename,".dot"))
+    DiagrammeR::generate_dot(graph) %>% writeChar(paste0(filename,".dot"))
+    DiagrammeR::export_graph(graph,file_name = paste0(filename,".pdf"),...)
+    DiagrammeR::export_graph(graph,file_name = paste0(filename,".png"),...)
+    DiagrammeR::export_graph(graph,file_name = paste0(filename,".svg"),...)
+  } else {
+    filename = tempfile(fileext = ".png")
     DiagrammeR::export_graph(graph,file_name = filename,...)
+  }
+  
+  if (isTRUE(getOption("knitr.in.progress"))) {
+    fmt <- rmarkdown::default_output_format(knitr::current_input())$name
+    return(knitr::include_graphics(path = normalizePath(paste0(filename,".png"),mustWork = FALSE),auto_pdf = TRUE))
   } else {
     return(graph %>% DiagrammeR::render_graph())
   }
+  
   #tmp = DiagrammeR::generate_dot(graph)
   #tmp2 = tmp %>% stringr::str_replace("graph \\[","graph [splines='ortho',")
   #tmp2 %>% DiagrammeR::grViz()

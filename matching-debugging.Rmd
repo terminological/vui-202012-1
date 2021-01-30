@@ -103,7 +103,7 @@ sGeneOnly = list(
 run30none1to1 = runAnalysis(
     coxData, sGeneCtThreshold = 30, ctThreshold = 30,
     ageTolerance = defaultAgeTol,specimenDateTolerance=defaultSpecTol,
-    modelFormula = models,resolutionStrategy = "none", filterExpr = mapType=="1:1")
+    modelFormula = models,resolutionStrategy = "none",ratio.neg = 1,ratio.pos = 1)
 
 run30none1to1$table4Data %>% combineBootstraps() %>% prettyPrintSummary()
 run30none1to1$table2Data %>% group_by(category) %>% standardPrintOutput::mergeCells()

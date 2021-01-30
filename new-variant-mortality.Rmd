@@ -55,6 +55,7 @@ if (dir.exists("~/Git/standard-print-output/")) {
 
 # devtools::load_all("~/Git/uk-covid-datatools/")
 # ukcovidtools::reload()
+options(dplyr.summarise.inform = FALSE)
 
 # load functions
 source("./new-variant-mortality.R")
@@ -64,8 +65,8 @@ source("./new-variant-mortality.R")
 ```{r}
 ## Do the analysis ----
 if(!exists("coxData")) 
-  coxData = loadData()
-
+  coxData = loadData(date = "20210118")
+coxData %>% p_status() %>% p_flowchart("~/Dropbox/covid19/new-variant/DataFlow1")
 ```
 
 ## Main analysis
@@ -110,15 +111,20 @@ if(!exists("run30"))
   run30 = runAnalysis(
     coxData, sGeneCtThreshold = 30, ctThreshold = 30,
     ageTolerance = defaultAgeTol,specimenDateTolerance=defaultSpecTol,
-    modelFormula = defaultModel,resolutionStrategy = "node sample", bootstraps = 100,
+    modelFormula = defaultModel,resolutionStrategy = "node sample", bootstraps = 50,
     includeRaw=FALSE,includeMatched = TRUE)
-  
+
+run30$coxMatchedData %>% p_flowchart("~/Dropbox/covid19/new-variant/DataFlow2")
+```
+
+```{r}
 p1 = ggplot(run30$coxMatchedData, aes(x=time,colour=sGene,linetype=deathStatus))+geom_line(stat="count")+scale_y_log10()
 p2 = ggplot(run30$coxMatchedData %>% filter(status==0),aes(x=time,colour=sGene))+ stat_ecdf(geom = "step")+ylab("P(censored before t|censored)")
 p3 = ggplot(run30$coxMatchedData %>% filter(status==1),aes(x=time,colour=sGene))+ stat_ecdf(geom = "step")+ylab("P(died before t|died)")
 
-p1+p2+p3+patchwork::plot_annotation(tag_levels = "A")+patchwork::plot_layout(guides="collect")
-rm(p1,p2,p3)
+tmpFig = p1+p2+p3+patchwork::plot_annotation(tag_levels = "A")+patchwork::plot_layout(guides="collect")
+tmpFig %>% standardPrintOutput::saveThirdPageFigure("~/Dropbox/covid19/new-variant/Diagnostics")
+rm(p1,p2,p3,tmpFig)
 ```
 
 
