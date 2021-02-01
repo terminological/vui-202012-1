@@ -59,17 +59,14 @@ options(dplyr.summarise.inform = FALSE)
 
 # load functions
 source("./new-variant-mortality.R")
-datadate="20210129"
-outdir = paste0("~/Dropbox/covid19/new-variant/",datadate,"/")
-if(!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
-outfile = function(x) paste0(outdir,x)
+
 ```
 
 ```{r}
 ## Do the analysis ----
 if(!exists("coxData")) 
-  coxData = loadData(date = datadate)
-coxData %>% p_status() %>% p_flowchart(outfile("DataFlow1"))
+  coxData = loadData(date = "20210118")
+coxData %>% p_status() %>% p_flowchart("~/Dropbox/covid19/new-variant/DataFlow1")
 ```
 
 ## Main analysis
@@ -117,7 +114,7 @@ if(!exists("run30"))
     modelFormula = defaultModel,resolutionStrategy = "node sample", bootstraps = 50,
     includeRaw=FALSE,includeMatched = TRUE)
 
-run30$coxMatchedData %>% p_flowchart(outfile("Fig1_DataFlow2"))
+run30$coxMatchedData %>% p_flowchart("~/Dropbox/covid19/new-variant/DataFlow2")
 ```
 
 ```{r}
@@ -126,7 +123,7 @@ p2 = ggplot(run30$coxMatchedData %>% filter(status==0),aes(x=time,colour=sGene))
 p3 = ggplot(run30$coxMatchedData %>% filter(status==1),aes(x=time,colour=sGene))+ stat_ecdf(geom = "step")+ylab("P(died before t|died)")
 
 tmpFig = p1+p2+p3+patchwork::plot_annotation(tag_levels = "A")+patchwork::plot_layout(guides="collect")
-tmpFig %>% standardPrintOutput::saveThirdPageFigure(outfile("Diagnostics"))
+tmpFig %>% standardPrintOutput::saveThirdPageFigure("~/Dropbox/covid19/new-variant/Diagnostics")
 rm(p1,p2,p3,tmpFig)
 ```
 
@@ -141,7 +138,7 @@ ggs = survminer::ggsurvplot(kmfit, conf.int = TRUE)
 fig1 = ggs$plot+coord_cartesian(ylim=c(0.995,1))
 if(spo) {
   (fig1+standardPrintOutput::defaultFigureLayout()+standardPrintOutput::narrower())  %>% 
-    standardPrintOutput::saveSixthPageFigure(outfile("Fig2_KMCurve"))
+    standardPrintOutput::saveSixthPageFigure("~/Dropbox/covid19/new-variant/KMCurve")
 } else {
   fig1
 }
@@ -153,7 +150,7 @@ rm(ggs,kmfit,fig1,tmp)
 
 if(spo) {
   run30$table2Data %>% group_by(category) %>% 
-    standardPrintOutput::saveTable(outfile("Tab1_CaseMatchedSummaryTable"),defaultFontSize = 8)
+    standardPrintOutput::saveTable("~/Dropbox/covid19/new-variant/CaseMatchedSummaryTable",defaultFontSize = 8)
 } else {
   knitr::kable(run30$table2Data)
 }
@@ -165,7 +162,7 @@ if(spo) {
 summary = summariseAnalysisRun(run30)
 if(spo) {
   prettyPrintSummary(summary) %>% 
-    standardPrintOutput::saveTable(outfile("Tab_2HRSummaryTable"),defaultFontSize = 8)
+    standardPrintOutput::saveTable("~/Dropbox/covid19/new-variant/HRSummaryTable",defaultFontSize = 8)
 } else {
   knitr::kable(prettyPrintSummary(summary))
 }
@@ -206,7 +203,7 @@ fig2 = p1+p3+p2+patchwork::plot_annotation(tag_levels = "A")+patchwork::plot_lay
 
 if(spo) {
   (fig2+standardPrintOutput::defaultFigureLayout())  %>% 
-    standardPrintOutput::saveThirdPageFigure(outfile("Fig3_ResidualBiases"))
+    standardPrintOutput::saveThirdPageFigure("~/Dropbox/covid19/new-variant/ResidualBiases")
 } else {
   fig2
 }
@@ -274,10 +271,10 @@ p3 = ggplot(summaryAgeTol %>% filter(model=="S gene + age" & term == "sGeneNegat
 ```
 
 ```{r}
-fig3 = p1+p3+p2+p4+patchwork::plot_annotation(tag_levels = "A")+patchwork::plot_layout(ncol=2)
+fig3 = p1+p2+p3+p4+patchwork::plot_annotation(tag_levels = "A")+patchwork::plot_layout(ncol=2)
 if(spo) {
   fig3 %>% 
-    standardPrintOutput::saveHalfPageFigure(outfile("Fig4_SensitivityAnalysis"))
+    standardPrintOutput::saveHalfPageFigure("~/Dropbox/covid19/new-variant/SensitivityAnalysis")
 } else {
   fig3
 }

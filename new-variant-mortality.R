@@ -301,9 +301,22 @@ createPairedMatches = function(coxData, ageTolerance, specimenDateTolerance,matc
       .headline = "Matching by:\n{m}\nwith tolerances:\nage<={ageTolerance} & specimen<={specimenDateTolerance}",
       .message = "{count.in} patients \n resulting in {count.out} pairs",
       function(d) {
-        posSgene = d %>% filter(sGene=="Positive")
-        negSgene = d %>% filter(sGene=="Negative")
-        if(as.numeric(nrow(negSgene)) * as.numeric(nrow(posSgene)) > max) stop("this would try and create a very large cross join of ",nrow(posSgene),"x",nrow(negSgene))
+        
+        d = d %>% select(all_of(matchOn),age,specimen_date,FINALID,sGene,status,time)
+        
+        posSgene = d %>% filter(sGene=="Positive") %>% 
+          rename_with(.cols=!all_of(matchOn), .fn = function(x) paste0(x,".pos")) %>% 
+          data.table::as.data.table()
+        posSgene %>% data.table::setkeyv(matchOn)
+        negSgene = d %>% filter(sGene=="Negative") %>% 
+          rename_with(.cols=!all_of(matchOn), .fn = function(x) paste0(x,".neg")) %>% 
+          data.table::as.data.table()
+        negSgene %>% data.table::setkeyv(matchOn)
+        
+        if(as.numeric(nrow(negSgene)) * as.numeric(nrow(posSgene)) > max) {
+          stop("this would try and create a very large cross join of ",nrow(posSgene),"x",nrow(negSgene))
+        }
+        message("Joining: ",nrow(posSgene),"x",nrow(negSgene))
         
         # pairwise matching
         ## case matching: 
@@ -311,21 +324,27 @@ createPairedMatches = function(coxData, ageTolerance, specimenDateTolerance,matc
         # then ensure age difference < 2 years & specimen date < 4 days
         # select S negatives and match to S positives
         # randomly select a single match out of possible matches
-        matches = 
-          negSgene %>% 
-          inner_join(
-            posSgene, 
-            by=matchOn,suffix=c(".neg",".pos")) %>% 
-          filter(
-            abs(age.neg-age.pos) <= ageTolerance & 
-              abs(as.numeric(specimen_date.neg-specimen_date.pos)) <= specimenDateTolerance
-          ) %>% 
+        matches = negSgene[posSgene, on=matchOn, nomatch=0, allow.cartesian=TRUE]
+        matches = matches[abs(age.neg-age.pos) <= ageTolerance][abs(as.numeric(specimen_date.neg-specimen_date.pos)) <= specimenDateTolerance]
+          # negSgene %>% 
+          # inner_join(
+          #   posSgene, 
+          #   by=matchOn,suffix=c(".neg",".pos")) %>% 
+          # filter(
+          #   abs(age.neg-age.pos) <= ageTolerance & 
+          #     abs(as.numeric(specimen_date.neg-specimen_date.pos)) <= specimenDateTolerance
+          # ) 
+        
+        matches = matches %>% 
           group_by(FINALID.neg) %>% mutate(order.pos = n()) %>%
           group_by(FINALID.pos) %>% mutate(order.neg = n()) %>%
           ungroup() %>% mutate(
             mapType.neg = paste0(order.neg,":",order.pos),
             mapType.pos = paste0(order.pos,":",order.neg)
           )
+        
+        rm(posSgene,negSgene)
+        gc()
         
         return(matches)
       }
@@ -504,18 +523,15 @@ uniquifyPairs = function(pairedMatches, resolutionStrategy, bootstraps, ratio.ne
   return(out)
 }
 
-pairedMatchesToCoxData = function(matches, matchOn) {
+pairedMatchesToCoxData = function(matches, matchOn, coxData) {
   out = matches %>% p_modify(
     .message = "{count.in} pairs converted to {count.out} individuals",
     function (d) {
       if (!"boot" %in% colnames(d)) d = d %>% mutate(boot=1)
-      sPos = d %>% select(boot,ends_with(".pos"),all_of(matchOn)) %>% 
-        rename_with(.fn=function(x) stringr::str_remove(x,".pos"),.cols=ends_with(".pos")) %>% 
-        mutate(sGene="Positive") %>% distinct()
-      sNeg = d %>% select(boot,ends_with(".neg"),all_of(matchOn)) %>% 
-        rename_with(.fn=function(x) stringr::str_remove(x,".neg"),.cols=ends_with(".neg")) %>% 
-        mutate(sGene="Negative") %>% distinct()
-      return(bind_rows(sPos,sNeg))
+      return(bind_rows(
+        coxData %>% inner_join(d %>% select(boot,FINALID=FINALID.pos), by=c("FINALID")) %>% distinct(),
+        coxData %>% inner_join(d %>% select(boot,FINALID=FINALID.neg), by=c("FINALID")) %>% distinct()
+      ))
     }
   ) %>% p_group_by(sGene) %>% p_status(
     TRUE ~ "{count} in all replicates",
@@ -560,7 +576,7 @@ runAnalysis = function(
   if (includeRaw) result$pairedMatchedData = matchesSelected
   
   # prepare data for cox PH models
-  coxFinal = matchesSelected %>% pairedMatchesToCoxData(matchOn = matchOn) %>% 
+  coxFinal = matchesSelected %>% pairedMatchesToCoxData(matchOn = matchOn, coxData = coxData3) %>% 
     p_mutate(sGene = sGene %>% forcats::as_factor() %>% forcats::fct_relevel("Positive")) # equivocal category is dropped
   
   if (includeMatched) result$coxMatchedData = coxFinal
@@ -623,6 +639,9 @@ runAnalysis = function(
     specimenDateDifference = mean(as.numeric(specimen_date.neg-specimen_date.pos))
   )
   result$table3Data = deltas
+  
+  rm(matchesSelected, matches, coxFinal, coxData3, posMatched, negMatched)
+  gc()
   
   return(result)
 }
