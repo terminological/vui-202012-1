@@ -14,6 +14,7 @@ This code depends on the following libraries:
 * data.table
 * survival
 * knitr / kable
+* patchwork
 * DiagrammeR
 * DiagrammeRsvg
 
