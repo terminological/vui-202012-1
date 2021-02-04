@@ -10,30 +10,12 @@ knit: (function(inputFile, encoding,...) {
     encoding = encoding,
     output_dir = "~/Dropbox/covid19/new-variant", output_file=paste0('new-variant-mortality-',Sys.Date(),'.pdf'))
   })
-# output:
-#   word_document :
-#     fig_caption: yes
-#     fig_width: 7
-# knit: (function(inputFile, encoding,...) {
-#   rmarkdown::render(
-#     inputFile,
-#     encoding = encoding,
-#     output_dir = "~/Dropbox/covid19/new-variant", output_file=paste0('new-variant-mortality-',Sys.Date(),'.docx'))
-#   })
-#TODO: https://www.reed.edu/data-at-reed/software/R/markdown_multiple_reports.html
 header-includes:
   \usepackage{float}
   \floatplacement{figure}{H}    
-
 fig_width: 7
 fig_height: 5
 out.width: "100%"
-# bibliography: current-rt.bib
-# csl: current-rt.csl
-# vignette: >
-#  %\VignetteIndexEntry{New Variant Mortality}
-#  %\VignetteEngine{knitr::rmarkdown}
-#  %\VignetteEncoding{UTF-8}
 ---
 
 ```{r setup, include=FALSE}
@@ -53,8 +35,6 @@ if (dir.exists("~/Git/standard-print-output/")) {
   spo = FALSE
 }
 
-# devtools::load_all("~/Git/uk-covid-datatools/")
-# ukcovidtools::reload()
 options(dplyr.summarise.inform = FALSE)
 
 # load functions
@@ -75,7 +55,7 @@ coxData %>% p_status() %>% p_flowchart(outfile("DataFlow1"))
 ## Main analysis
 
 * We choose small tolerances for specimen date & larger for age.
-* The default model includes age as a covariate to adjust for mismatches in age. however matching is not biased by age.
+* The default model includes age as a co-variate to adjust for mismatches in age. however matching is not biased by age.
 
 ```{r}
 defaultAgeTol = 5
@@ -106,7 +86,8 @@ sGeneAge = list(
 
 ## Central estimates
 
-* Selecting the node sampling strategy as above but with more bootstraps
+* Run the full analysis with defaults
+* and node sampling strategy and with more bootstraps
 
 ```{r}
 
@@ -120,6 +101,12 @@ if(!exists("run30"))
 run30$coxMatchedData %>% p_flowchart(outfile("Fig1_DataFlow2"))
 ```
 
+* some basic checks on the matched pairs data
+* are the counts over time sensible, 
+* are the censored dates sensible and identical, 
+* are the cumulative probability of death<t|died sensible
+* this is not included in the paper
+
 ```{r}
 p1 = ggplot(run30$coxMatchedData, aes(x=time,colour=sGene,linetype=deathStatus))+geom_line(stat="count")+scale_y_log10()
 p2 = ggplot(run30$coxMatchedData %>% filter(status==0),aes(x=time,colour=sGene))+ stat_ecdf(geom = "step")+ylab("P(censored before t|censored)")
@@ -130,8 +117,11 @@ tmpFig %>% standardPrintOutput::saveThirdPageFigure(outfile("Diagnostics"))
 rm(p1,p2,p3,tmpFig)
 ```
 
-
 ### Median sample KM curve
+
+* We select one bootstrap sample that produced the median HR for Kaplan-meier visualisation
+* If we took all bootstraps confidence intervals would be very narrow.
+* This is figure 2
 
 ```{r}
 tmp = run30$table4Data %>% filter(model=="S gene + age") %>% group_by(boot) %>% summarise(mean.HR = mean(HR)) %>% ungroup() 
@@ -149,6 +139,9 @@ rm(ggs,kmfit,fig1,tmp)
 ```
 ### Summary table
 
+* compares the S neg, Spos and deaths.
+* this is table 1
+
 ```{r}
 
 if(spo) {
@@ -160,6 +153,8 @@ if(spo) {
 ```
 
 ### HR table
+
+* this is table 2
 
 ```{r}
 summary = summariseAnalysisRun(run30)
@@ -173,6 +168,9 @@ if(spo) {
 ```
 
 ## Biases in matched data set
+
+* any evidence of residual bias?
+* this is figure 3
 
 ```{r}
 ## Check for residual biases in case matched data set ----
@@ -214,6 +212,10 @@ if(spo) {
 
 ## Sensitivity analysis
 
+* rerun the full analysis for a range of different starting values
+* CT values from 20-25
+* N.b. this can take some time.
+
 ```{r}
 
 if (!exists("summaryCT")) {
@@ -232,6 +234,8 @@ p1 = ggplot(summaryCT %>% filter(model=="S gene + age" & term == "sGeneNegative"
 
 
 ```
+
+* specimen date tolerances from 0 to 14 years
 
 ```{r}
 if (!exists("summaryDateTol")) {
@@ -255,6 +259,8 @@ p4 = ggplot(summaryDateTol %>% filter(model=="S gene + age" & term == "sGeneNega
 
 ```
 
+* age tolerances from 0 to 9 years
+
 ```{r}
 if (!exists("summaryAgeTol")) {
   summaryAgeTol = NULL
@@ -272,6 +278,9 @@ p3 = ggplot(summaryAgeTol %>% filter(model=="S gene + age" & term == "sGeneNegat
   coord_cartesian(ylim=c(0.5,3))+
   gghighlight::gghighlight(ageTolerance==defaultAgeTol,unhighlighted_params = list(colour = "black"))
 ```
+
+* assemble output of sensitivity analysis
+* this is figure 4
 
 ```{r}
 fig3 = p1+p3+p2+p4+patchwork::plot_annotation(tag_levels = "A")+patchwork::plot_layout(ncol=2)

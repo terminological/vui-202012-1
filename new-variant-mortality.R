@@ -7,6 +7,13 @@ setwd("~/Git/vui-202012-1/")
 source("./provenance.R")
 
 ## Data loading functions ----
+
+#' Loads the line list of deaths in the format provided by PHE
+#'
+#' @param path - where on the local filesystem
+#' @param ... - not used
+#' @return a dataframe of death data
+#' @examples dll = getDeathsLineList("~/Data/new-variant/20210129 COVID19 Deaths.xlsx")
 getDeathsLineList = function(path, ...) {
   tmp = readxl::read_excel(path, col_types = "text")
   datecols = c(colnames(tmp) %>% stringr::str_subset("date"),"dod")
@@ -22,17 +29,24 @@ getDeathsLineList = function(path, ...) {
   return(tmp %>% mutate(FINALID=as.numeric(finalid)) %>% dplyr::ungroup() %>% p_comment(glue::glue("Deaths from: {path}",path=path)) %>% p_status())
 }
 
-#' @description Load line list
-#' 
-#' @return raw line list data set
+#' Loads the raw line list of s Gene results in the format provided by PHE
+#'
+#' @param path - where on the local filesystem
+#' @param ... - not used
+#' @return a dataframe of s gene data
+#' @examples sgll = getSGeneLineList("~/Data/new-variant/SGTF_linelist_20210129.csv")
 getSGeneLineList = function(path,...) {
   tmp = readr::read_csv(path)
   return(tmp %>% dplyr::ungroup() %>% p_comment(glue::glue("S gene from: {path}",path=path)) %>% p_status())
 }
 
-#' @description Load line list
-#' 
-#' @return raw line list data set
+#' Loads the raw line list of cases data in the format provided by PHE
+#' Normalise ethnicity to 4 categories, residential category to 3 categories
+#'
+#' @param path - where on the local filesystem
+#' @param ... - not used
+#' @return a dataframe of case data
+#' @examples sgll = getLineList("~/Data/new-variant/SGTF_linelist_20210129.csv")#' /home/terminological/Data/new-variant/Anonymised Combined Line List 20210129.csv
 getLineList = function(path,...) {
     tmp = readr::read_csv(path, col_types = readr::cols(.default = readr::col_character()))
     tmp = tmp %>% 
@@ -68,7 +82,11 @@ getLineList = function(path,...) {
     ) %>% dplyr::ungroup() %>% p_comment(glue::glue("Cases from: {path}",path=path)) %>% p_status())
 }
 
-
+#' Normalise a vector of strings specifying genders strings to a minimal format
+#'
+#' @param gender - string vector
+#' @return a string vector
+#' @examples tmp %>% mutate(gender = normaliseGender(ifelse(is.na(gender),"unknown",gender)))
 normaliseGender = function(gender) {
   case_when(
     is.na(gender) ~ NA_character_,
@@ -78,17 +96,27 @@ normaliseGender = function(gender) {
     TRUE ~ "unknown")
 }
 
-## Load the data
-# check if already loaded
-# we discard S gene data for patients who have had more than one S gene test result. 
-# this will put these patients into the "Unknown / P1" category, and will be excluded from the case control part of study but included in the main analysis.
-
+#' Load data and assemble the data used in the analysis.
+#' The resulting data includes the raw CT values.
+#'
+#' @param dir - the data directory
+#' @param date - the data date as a %Y%m%d string which is how it is represented in the PHE files
+#' @param censorLength - how long before you censor observations of death - default is 28
+#' @param B117Date - the date before which B.1.1.7 was not circulating - default "2020-10-01"
+#' @param earliestDate - the earliest date to consider in the analysis - defaults to B117Date
+#' @param latestDate - the latest date to consider in the analysis - defaults to latest date in death line list
+#' @param minAge - the smallest age to consider
+#'
+#' @return a data set including a time, and status column, for cox modelling, and raw CT values. The dataframe retains provenance (available through df %>% p_flowchart() )
+#'
+#' @examples coxData = loadData("~/Data/new-variant","20200129")
 loadData = function(dir="~/Data/new-variant",date, censorLength = 28, B117Date = as.Date("2020-10-01"), earliestDate = B117Date, latestDate = NULL, minAge = 30) {
   
   ll = getLineList(path=paste0(dir,"/Anonymised Combined Line List ",date,".csv"))
   dll = getDeathsLineList(path = paste0(dir,"/",date," COVID19 Deaths.xlsx"))
   sgll = getSGeneLineList(path = paste0(dir,"/SGTF_linelist_",date,".csv"))
   
+  # exclude any non unique results
   sgllUniq = sgll %>% 
     p_clear() %>%
     p_status(TRUE ~ "{count} S gene test results") %>%
@@ -105,32 +133,22 @@ loadData = function(dir="~/Data/new-variant",date, censorLength = 28, B117Date =
   
   if (identical(latestDate,NULL)) latestDate = max(dll$dod,na.rm=TRUE)
   
-  # Is this a potential source of bias?
-  # excludedSgll = sgll %>% anti_join(sgllUniq, by = "FINALID")
-  # if(nrow(excludedSgll) > 0) {
-  #   message("we excluded ",excludedSgll %>% pull(FINALID) %>% unique() %>% length()," patients with multiple S Gene test results in pillar 2")
-  #   excludedDeaths = dll %>% inner_join(excludedSgll, by="FINALID", suffix=c("",".sgene")) #%>% filter(specimen_date > "2020-10-01" & age>30)
-  #   message("of these ",excludedDeaths %>% filter(specimen_date.sgene > B117Date) %>% pull(FINALID) %>% unique() %>% length()," died during the study period")
-  # }
-  
-  # get the S gene line list and remove all patients who have more than one S Gene result. Otherwise we don;t have a single source in time for when to start the survival clock.
-  # interpretSGene assigns sGene "Positive" for S+N+ORF+ with cutOff for S at 40 and N & ORF at 30; Negative is S-N+ORF+; equivocal is anything else (e.g. S-N-ORF+)
-  # We exclude anything which does not match the line list.
-  
   # Join the line list, deaths line list and uniquified sGene line list by FINALID
   coxData = ll %>% 
     left_join(sgllUniq, by="FINALID", suffix=c("",".sgene")) %>% 
     left_join(dll %>% mutate(FINALID=as.numeric(finalid)), by=c("FINALID"),suffix=c("",".death")) %>% 
-    p_copy(sgllUniq) %>%
+    p_clear() %>%
+    p_status(
+      TRUE ~ "{count} linked patients"
+    ) %>% 
     p_exclude(
-      specimen_date < earliestDate ~ "excluded {count} samples taken before {earliestDate}",
-      specimen_date > latestDate ~ "excluded {count} samples taken after {latestDate}",
+      is.na(specimen_date.sgene) ~ "{count} patients with unknown S gene status",
+      specimen_date < earliestDate ~ "{count} diagnosed before {earliestDate}",
+      specimen_date > latestDate ~ "{count} diagnosed after {latestDate}",
     ) %>%
     p_status(
-      !is.na(specimen_date.sgene) ~ "{count} patients with known S gene result",
-      is.na(specimen_date.sgene) ~ "{count} patients with unknown S gene result",
-      !is.na(dod) ~ "{count} who died",
-      is.na(dod) ~ "{count} who remain alive"
+      TRUE ~ "{count} included patients",
+      !is.na(dod) ~ "of whom {count} died",
     )
   
   coxData2 = coxData %>% 
@@ -145,7 +163,7 @@ loadData = function(dir="~/Data/new-variant",date, censorLength = 28, B117Date =
       death_type28, 
       age,sex,imd_decile,
       P2CH3CQ,P2CH1CQ,P2CH2CQ,P2CH4CQ, # gene copy numbers
-      sgtf, sgtf_under30CT, # gene copy number interpretation
+      sgtf, sgtf_under30CT, # gene copy number interpretation from sGene line list
       NHSER_name,NHSER_code,
       ethnicity_final, # reduced set of ethnicities
       residential_category, # reduced set of residential categories
@@ -169,29 +187,11 @@ loadData = function(dir="~/Data/new-variant",date, censorLength = 28, B117Date =
       preB117 = specimen_date < B117Date
     )
   
-
+  # TODO: We may need to consider the data stratified by sGene status from this point in the future, but this would need to assume a CT threshold
+  # although we could use official (sgtf, sgtf_under30CT) flags for this:
+  # coxData2 = coxData2 %>% interpretSGene()
+  # coxData2 = coxData2 %>% p_stratify(sgtf_under30CT) %>% p_status_summary(count = n(), .glue="{count} with s gene status {sgtf_under30CT}")
   
-  # tmpCox = coxData2 %>% interpretSGene()
-  # tmpCox %>% filter(sGene=="Equivocal") %>% nrow() %>% message(" with equivocal results excluded")
-  # tmpCox %>% filter(sGene=="Negative") %>% nrow() %>% message(" S- cases")
-  # tmpCox %>% filter(sGene=="Positive") %>% nrow() %>% message(" S+ controls")
-  
-  # reportExclusions = function(cox,type) {
-  #   type = paste0(" ",type)
-  #   cox %>% filter(is.na(imd_decile)) %>% nrow() %>% message(type," with missing IMD")
-  #   cox %>% filter(is.na(sex) | sex=="Unknown") %>% nrow() %>% message(type," with missing or unknown gender")
-  #   cox %>% filter(is.na(age)) %>% nrow() %>% message(type," with unknown age")
-  #   cox %>% filter(age<minAge) %>% nrow() %>% message(type," with age <",minAge)
-  #   cox %>% filter(is.na(ethnicity_final)) %>% nrow() %>% message(type," with unknown ethnicity")
-  #   cox %>% filter(admissionDelay < 0) %>% nrow() %>% message(type," admitted before pillar 2 test taken")
-  #   cox %>% filter(reportingDelay < 0 | reportingDelay>=20) %>% nrow() %>% message(type," whose tests are reported before specimen taken or >19 days after specimen taken")
-  #   cox %>% filter(sGeneDelay < 0 | sGeneDelay>=20) %>% nrow() %>% message(type," whose sGene tests are >19 days after original positive test")
-  #   cox %>% filter(time<=0) %>% nrow() %>% message(type," whose time from test to event (death) is 0 or less (e.g. postmortem tests)")
-  # }
-  # 
-  # tmpCox %>% filter(sGene=="Negative") %>% reportExclusions("S- cases")
-  # tmpCox %>% filter(sGene=="Positive") %>% reportExclusions("S+ controls")
-  # 
   coxData3 = coxData2 %>%
     p_exclude(
       is.na(imd_decile) ~ "{count} with missing IMD",
@@ -201,8 +201,8 @@ loadData = function(dir="~/Data/new-variant",date, censorLength = 28, B117Date =
       is.na(ethnicity_final) ~ "{count} with unknown ethnicity",
       admissionDelay < 0 ~ "{count} admitted before pillar 2 test taken",
       reportingDelay < 0 | reportingDelay>=20 ~ "{count} with reporting delay <0 or >19 days",
-      sGeneDelay < 0 | sGeneDelay>=20 ~ "{count} whose sGene tests are <0 or >19 days after original positive test",
-      time<=0 ~ "{count} whose time from test to event (death) is <0 (e.g. postmortem tests)",
+      sGeneDelay < 0 | sGeneDelay>=20 ~ "{count} with sGene <0 or >19 days after first test",
+      time<=0 ~ "{count} whose outcome occurred before sGene test",
       is.na(LTLA_name) ~ "{count} with unknown location"
       ) %>%
     p_mutate(
@@ -211,22 +211,31 @@ loadData = function(dir="~/Data/new-variant",date, censorLength = 28, B117Date =
       imd_decile = forcats::fct_relevel(forcats::as_factor(as.numeric(imd_decile)),"5"),
       imd_decile_2 = forcats::as_factor(as.numeric(imd_decile)),
       deathStatus = ifelse(diedWithin28days,"Dead <28 days","Other")
+    ) %>%
+    p_status(
+      TRUE ~ "{count} passing data quality checks",
+      !is.na(dod) ~ "of whom {count} died",
     )
-  
-  # tmpCox = coxData2 %>% interpretSGene()
-  # tmpCox %>% filter(sGene=="Negative") %>% nrow() %>% message(" S- cases eligible for inclusion")
-  # tmpCox %>% filter(sGene=="Positive") %>% nrow() %>% message(" S+ controls eligible for inclusion")
-  
-  ## quality control
-  
   
   return(coxData3)
 }
 
 ## Analysis functions: ----
 
-# function to help interpret S gene CT values in context of N gene and ORF gene to give S gene status. 
-# With the defaults this produces the same result as the sgtf_30 column in the sounrge SGTF line list
+#' Interpret S gene status according to various cut off values
+#' function to help interpret S gene CT values in context of N gene and ORF gene to give S gene status. 
+#' With the defaults this produces the same result as the sgtf_30 column in the source SGTF line list
+#' Defaults are S:30,ORF:30,N:30,Control:Inf
+#'
+#' @param sGeneLineList - a dataframe includeing 
+#' @param S_CT - S gene detected when P2CH3CQ <= this value
+#' @param ORF1ab_CT - ORF1ab gene detected when P2CH1CQ <= this value
+#' @param N_CT - N gene detected when P2CH2CQ <= this value
+#' @param Control_CT - control sample is positive when P2CH4CQ <= this value
+#'
+#' @return - the same dataframe with additional columns including "sGene" and "result"
+#'
+#' @examples coxData = coxData %>% interpretSGene()
 interpretSGene = function(sGeneLineList, S_CT = 30, ORF1ab_CT = 30, N_CT = 30, Control_CT = Inf) {
   params = glue::glue("CT thresholds S<={S_CT}:N<={N_CT}:ORF<={ORF1ab_CT}")
   sGeneLineList %>% 
@@ -263,43 +272,37 @@ interpretSGene = function(sGeneLineList, S_CT = 30, ORF1ab_CT = 30, N_CT = 30, C
     ) %>%
     p_status(
       .headline = params,
-      sGene == "Unknown" ~ "{count} with unknown S status",
+      # sGene == "Unknown" ~ "{count} with unknown S status",
       sGene == "Positive" ~ "{count} with S+ status",
       sGene == "Negative" ~ "{count} with S- status",
       sGene == "Equivocal" ~ "{count} with equivocal S status",
     )
 }
 
-bootstrappedCoxModel = function(coxFinal, modelName, modelFormula) {
-  message("Calculating ",modelName)
-  bootSurvModels = coxFinal %>% group_by(boot) %>% group_modify(function(d,g,...) {
-    survModel = survival::coxph(modelFormula, d)
-    out = tidyCoxmodel(survModel) %>% mutate(model=modelName)
-    rm(survModel)
-    return(out)
-  })
-}
 
-tidyCoxmodel = function(survModel) {
-  broom::tidy(survModel) %>% bind_cols(as.data.frame(confint(survModel))) %>% 
-    mutate(
-      HR = exp(estimate), 
-      HR.lower=exp(`2.5 %`), 
-      HR.upper=exp(`97.5 %`), 
-      HR.pValue = p.value)
-}
 
+#' Matches coxData entries with each other to form pairs with similar properties but differing by S gene status (Positives and Negatives only)
+#'
+#' @param coxData - data frame to match containing all the colums specified in matchOn and age, specimen_date, sGene, status (died or censored), time and FINALID as a minimum
+#' @param ageTolerance - maximum delta in year of age allowed in matching pairs. an age 75 and 80 will match if ageTolerance is 5 (80-75)<=5
+#' @param specimenDateTolerance - maximum delta in specimen date allowed
+#' @param matchOn - a set of columns to perform exact matching on as a character vector, e.g. c("sex","imd_decide","LTLA_name","ethnicity_final",...)
+#' @param max - a safety net for max numbers of items to attempt to join.
+#'
+#' @return - essentially an edgelist or pair list consisting of the matchOn columns and additional columns mentioned above.
+#'
+#' @examples
 createPairedMatches = function(coxData, ageTolerance, specimenDateTolerance,matchOn, max) {
   m = paste0(matchOn,collapse=', ')
   out = coxData %>% 
     p_exclude(
-      preB117 ~ "{count} predating B.1.1.7 emergence",
-      sGene == "Unknown" ~ "{count} with unknown S status",
+      # preB117 ~ "{count} predating VOC emergence",
+      # sGene == "Unknown" ~ "{count} with unknown S status",
       sGene == "Equivocal" ~ "{count} with equivocal S status"
     ) %>%
     p_modify(
-      .headline = "Matching by:\n{m}\nwith tolerances:\nage<={ageTolerance} & specimen<={specimenDateTolerance}",
-      .message = "{count.in} patients \n resulting in {count.out} pairs",
+      .headline = "Matching by:\n{m}\nwith tolerances: age \u00b1{ageTolerance} years & sample date \u00b1{specimenDateTolerance} days",
+      .message = "from {count.in} individuals, we found {count.out} pairs",
       function(d) {
         
         d = d %>% select(all_of(matchOn),age,specimen_date,FINALID,sGene,status,time)
@@ -326,14 +329,15 @@ createPairedMatches = function(coxData, ageTolerance, specimenDateTolerance,matc
         # randomly select a single match out of possible matches
         matches = negSgene[posSgene, on=matchOn, nomatch=0, allow.cartesian=TRUE]
         matches = matches[abs(age.neg-age.pos) <= ageTolerance][abs(as.numeric(specimen_date.neg-specimen_date.pos)) <= specimenDateTolerance]
-          # negSgene %>% 
-          # inner_join(
-          #   posSgene, 
-          #   by=matchOn,suffix=c(".neg",".pos")) %>% 
-          # filter(
-          #   abs(age.neg-age.pos) <= ageTolerance & 
-          #     abs(as.numeric(specimen_date.neg-specimen_date.pos)) <= specimenDateTolerance
-          # ) 
+        # this is done with data.table for performance reasons. the original dplyr code was:
+        # matches = negSgene %>% 
+        # inner_join(
+        #   posSgene, 
+        #   by=matchOn,suffix=c(".neg",".pos")) %>% 
+        # filter(
+        #   abs(age.neg-age.pos) <= ageTolerance & 
+        #     abs(as.numeric(specimen_date.neg-specimen_date.pos)) <= specimenDateTolerance
+        # ) 
         
         matches = matches %>% 
           group_by(FINALID.neg) %>% mutate(order.pos = n()) %>%
@@ -352,11 +356,30 @@ createPairedMatches = function(coxData, ageTolerance, specimenDateTolerance,matc
   return(out)
 }
 
+
+#' Resolution of multiple matches in the dataset.
+#' We find that especially in the early and late stages of the transition to S Negative, there are some patients who closely match large numbers of other patients.
+#' This is doubly true the more we relax our matching tolerances.
+#' Ideally we don't individuals patients in the data set multiple times (although one school of thought is that given they are matched multiple times it doesn;t matter)
+#' There are 3 strategies to remove duplicates:
+#' "none" - don't remove them
+#' "node sample" - randomly sample the unique cases and controls who have not yet been selected, pick at random a match associated with that patient. select that pair, ensuring both case and control are unique
+#' "edge sample" - randomly sample the pairs not yet selected, select a pair and make sure that any other pair involving either case or control is removed.
+#' In testing there is not much difference between the last 2 options in analysis.
+#'
+#' @param pairedMatches a dataframe of paired matches
+#' @param resolutionStrategy a name of a resolution strategy to adopt - currently supported are "none","edge sample","node sample", and a legacy - "bootstrap" option which was out first attempt at this.
+#' @param bootstraps - for edge or node sampling the number of replicates to produce - for none there will only ever be 1 replicate
+#' @param ratio.neg - a filter to exclude S Negatives that are matched to a large number of S Positive - these can be over-represented in the early stage of the transition to S Negative
+#' @param ratio.pos - a filter to exclude S Positives that are matched to a large number of S Negatives - these can be over-represented in the late stage of the transition to S Negative
+#'
+#' @return an paired list that (depending on options) includes unique cases and controls. This has a "boot" column which defines which replicate it is. For very many bootstraps this might get unmanageably large.
+#'
+#' @examples
 uniquifyPairs = function(pairedMatches, resolutionStrategy, bootstraps, ratio.neg=NULL, ratio.pos=NULL) {
   message = glue::glue("Selecting unique pairs by {resolutionStrategy} with {bootstraps} replicates.\n",
                       "Before sampling the matched set contains:\n",
-                      "{n_distinct(pairedMatches$FINALID.neg)} unique S-\n",
-                      "and {n_distinct(pairedMatches$FINALID.pos)} unique S+")
+                      "{n_distinct(pairedMatches$FINALID.neg)} unique S- cases and {n_distinct(pairedMatches$FINALID.pos)} unique S+ controls")
   
   if (!is.null(ratio.neg) & ! is.null(ratio.pos)) {
     pairedMatched = pairedMatches %>%
@@ -367,21 +390,17 @@ uniquifyPairs = function(pairedMatches, resolutionStrategy, bootstraps, ratio.ne
   }
   
   out = pairedMatches %>% p_modify(
-    .headline = message,
-    .message = "{count.in} pairs input:\n{count.out} pairs over all replicates",
+    .message = message,
     function(d) {
   
   
       if (resolutionStrategy == "bootstrap") {
         warning("This option is here for legacy purposes. It is superceded by the edge sample option which does what this should have done")
-        # TODO: I am not sure if there is a risk here of a systematic bias, or at least a random bias that is systematically present
-        # throughout the analysis.
-        # What happens here is the majority of matches are 1:1 and will always be picked in each bootstrap.
+        # NB: I am not sure if there is a risk here of a systematic bias, or at least a random bias that is systematically present
+        # throughout the analysis. What happens here is the majority of matches are 1:1 and will always be picked in each bootstrap.
         # These matches are essentially oversampled
         # Other match ratios eg. 1:2 or 2:1 will be randomly picked for each boot strap - the lines starting group_by(FINALID.neg) and group_by(FINALID.pos) do this.
         # There are not equal amounts of potential matches from both classes before sampling.
-        
-        # @Leon
         # randomly select a single match out of possible matches for each bootstrap
         set.seed(101)
         matchesSelected = NULL
@@ -397,14 +416,14 @@ uniquifyPairs = function(pairedMatches, resolutionStrategy, bootstraps, ratio.ne
             # It selects random matches for LHS and then selects random reverse matches that are paired with
             # LHS random match. however this leads to situations where there is less chance of
             # a RHS appearing if it matches a LHS that is over-represented.
-            # it's not symmetrical.
+            # it's not symmetrical. It is one source of our initially high estimates.
             ungroup() %>% mutate(boot = i)
           matchesSelected = bind_rows(matchesSelected,tmp)
         }
         message("..finished")
         
       } else if(resolutionStrategy == "none") {
-        # ignore duplicates
+        # ignore duplicates altogether
         matchesSelected = d %>% mutate(boot=1) %>% ungroup()
         
       } else if(resolutionStrategy == "edge sample") {
@@ -449,7 +468,6 @@ uniquifyPairs = function(pairedMatches, resolutionStrategy, bootstraps, ratio.ne
         message("bootstrapping",appendLF = FALSE)
         for (i in 1:bootstraps) {
           message("..",i,appendLF = FALSE)
-          #browser()
           
           # We are picking nodes at random from the whole set of possible nodes regardless of Sneg or Spos status
           # all we are doing here is assigning a random order to the node list
@@ -519,13 +537,19 @@ uniquifyPairs = function(pairedMatches, resolutionStrategy, bootstraps, ratio.ne
       }
       return(matchesSelected)
     })
-  message("After sampling the matched set contains ",n_distinct(out$FINALID.neg)," unique S- and ",n_distinct(out$FINALID.pos)," unique S+")
   return(out)
 }
 
-pairedMatchesToCoxData = function(matches, matchOn, coxData) {
+#' Pivots a wide pairlist into a long list suitable for default cox model analysis, and restores any data stripped out when matching pairs.
+#'
+#' @param matches - the paired data
+#' @param coxData - the original unpaired data
+#'
+#' @return a cox model friendly dataframe
+#'
+#' @examples
+pairedMatchesToCoxData = function(matches, coxData) {
   out = matches %>% p_modify(
-    .message = "{count.in} pairs converted to {count.out} individuals",
     function (d) {
       if (!"boot" %in% colnames(d)) d = d %>% mutate(boot=1)
       return(bind_rows(
@@ -533,17 +557,48 @@ pairedMatchesToCoxData = function(matches, matchOn, coxData) {
         coxData %>% inner_join(d %>% select(boot,FINALID=FINALID.neg), by=c("FINALID")) %>% distinct()
       ))
     }
-  ) %>% p_group_by(sGene) %>% p_status(
-    TRUE ~ "{count} in all replicates",
-    diedWithin28days ~ "of whom {count} died within 28 days",
-    !diedWithin28days ~ "and {count} still alive at 28 days",
-    boot==1 ~ "{count} in 1st replicate",
-    diedWithin28days & boot==1 ~ "of whom {count} died within 28 days",
-    !diedWithin28days & boot==1 ~ "and {count} were still alive at 28 days"
-  ) %>% p_ungroup()
+  ) %>% 
+    p_group_by(sGene) %>% 
+    p_status_summary(
+      count = n(),
+      boots = n_distinct(boot),
+      died = sum(ifelse(diedWithin28days,1,0)),
+      .glue = c(
+        "{sprintf('%1.0f',count/boots)} patients",
+        "of whom {sprintf('%1.0f',died/boots)} died within 28 days",
+        "and {sprintf('%1.0f',(count-died)/boots)} survived for 28 days"
+      )
+    ) %>% p_ungroup(
+      count = n(),
+      boots = n_distinct(boot),
+      .glue = c("{sprintf('%1.0f',count/boots)} matched patients.")
+    )
   return(out)
 }
 
+
+
+#' The main entry point for the analysis and all control options.
+#'
+#' @param coxData - the loaded data from loadData() function
+#' @param sGeneCtThreshold - defaults to the same value as ctThreshold
+#' @param ctThreshold - CT values defining positivity CT <= ctThreshold
+#' @param bootstraps - Number of replicates if needed - test with a small number
+#' @param ageTolerance - delta age <= age tolerance (years)
+#' @param specimenDateTolerance  - delta specimen_date <= specimen date tolerance (days)
+#' @param modelFormula - a list of cox model formulae to try. Columns allowed are any from the coxData input, should be specified as a named list of formulae e.g. list(`S gene + age`=Surv(time,status) ~ sGene+age),
+#' @param max - maximum number of sGene positive x sGene negative you are allowing to be matched before the algorithm aborts. With loose mathcing criteria very large joins can cause crashes.
+#' @param includeRaw - include as output the raw unpaired cox Data - for further analysis
+#' @param includeMatched  - include as output the paired cox Data - for further analysis 
+#' @param matchOn - columns to use to generate pairs (see createPairedMatches())
+#' @param resolutionStrategy - strategy to resolve pair duplicates (see uniquifyPairs())
+#' @param ratio.neg - filters for excluding cases with many matches to controls (see uniquifyPairs())
+#' @param ratio.pos - filters for excluding controls with many matches to cases (see uniquifyPairs())
+#'
+#' @return - a summary output of all the analysis
+#' @export
+#'
+#' @examples
 runAnalysis = function(
     coxData, sGeneCtThreshold = ctThreshold, ctThreshold=30, 
     bootstraps=10, ageTolerance = 5, specimenDateTolerance = 1,
@@ -573,11 +628,11 @@ runAnalysis = function(
   
   # resolve duplicates in matched pairs
   matchesSelected = matches %>% uniquifyPairs(resolutionStrategy=resolutionStrategy, bootstraps = bootstraps, ratio.neg=ratio.neg, ratio.pos=ratio.pos)
-  if (includeRaw) result$pairedMatchedData = matchesSelected
+  if (includeMatched) result$pairedMatchedData = matchesSelected
   
   # prepare data for cox PH models
-  coxFinal = matchesSelected %>% pairedMatchesToCoxData(matchOn = matchOn, coxData = coxData3) %>% 
-    p_mutate(sGene = sGene %>% forcats::as_factor() %>% forcats::fct_relevel("Positive")) # equivocal category is dropped
+  coxFinal = matchesSelected %>% pairedMatchesToCoxData(coxData = coxData3) %>% 
+    p_mutate(sGene = sGene %>% forcats::as_factor() %>% forcats::fct_drop() %>% forcats::fct_relevel("Positive")) # equivocal category is dropped
   
   if (includeMatched) result$coxMatchedData = coxFinal
   
@@ -618,7 +673,6 @@ runAnalysis = function(
     })
   }
   
-  ## Pull results
   ## high level stats about number of deaths in each arm of control study where 
   combinedSummary1 = coxFinal %>% group_by(sGene,boot) %>% summarise(pairs = n()) %>% left_join(
     coxFinal %>% filter(diedWithin28days) %>% group_by(sGene,boot) %>% summarise(deaths = n()),
@@ -626,7 +680,7 @@ runAnalysis = function(
   )
   result$table1Data = combinedSummary1
 
-  ## summary of pairwise matching data set ----
+  ## summary of pairwise matching data set
   message("Summarising results")
   combinedSummary2 = summaryTable(posMatched, bootstraps) %>% rename_with(~paste0("S pos ",.x),.cols=c(N,`%age`,`mean (SD)`)) %>% #,by=c("category","value")) %>%
     full_join(summaryTable(negMatched, bootstraps) %>% rename_with(~paste0("S neg ",.x),.cols=c(N,`%age`,`mean (SD)`)),by=c("category","value")) %>% 
@@ -647,70 +701,44 @@ runAnalysis = function(
 }
 
 
-
-
-
-# runAnalysisQuick = function(
-#   coxData, sGeneCtThreshold = ctThreshold, ctThreshold=30, 
-#   ageTolerance = 3, specimenDateTolerance = 5,
-#   matchOn = c("sex","imd_decile","LTLA_name","ethnicity_final","ageCat"), #"residential_category"),
-#   max = 450000*450000, includeRaw=FALSE, includeMatched=FALSE
-# ) {
-#   result = list(params=tibble(
-#     sGeneCtThreshold = sGeneCtThreshold,
-#     ctThreshold = ctThreshold,
-#     ageTolerance = ageTolerance,
-#     specimenDateTolerance = specimenDateTolerance
-#   ))
-#   
-#   message("Interpreting data with CT threshold of S<",sGeneCtThreshold,":N<",ctThreshold,":ORF<",ctThreshold,
-#           "; tolerances - age=",ageTolerance,":specimen_date=",specimenDateTolerance)
-#   
-#   coxData3 = coxData %>% interpretSGene(S_CT = sGeneCtThreshold,N_CT = ctThreshold,ORF1ab_CT = ctThreshold)
-#   if (includeRaw) result$rawData = coxData3
-#   
-#   matches = coxData3 %>% createPairedMatches(ageTolerance = ageTolerance, specimenDateTolerance = specimenDateTolerance, matchOn = matchOn, max=max)
-#   
-#   rm(coxData3)
-#   
-#   # calculate a weighing for each side of each match based on frequecy
-#   matches = matches %>% 
-#     group_by(FINALID.pos) %>% mutate(wt.pos = 1/n()) %>%
-#     group_by(FINALID.neg) %>% mutate(wt.neg = 1/n()) %>%
-#     ungroup()
-#   
-#   if (includeMatched) {
-#     result$weightedMatchedData = matched
-#   }
-#   
-#   # https://ete-online.biomedcentral.com/articles/10.1186/s12982-017-0060-8
-#   # TODO: explain weighing modification to pairwise matched HR calculation to account for over-matching
-#   PLME_HR = matches %>% 
-#     mutate(
-#       weightedG = ifelse(time.neg < time.pos & status.neg==1, wt.neg, 0), 
-#       weightedH = ifelse(time.pos < time.neg & status.pos==1, wt.pos, 0),
-#     ) %>%
-#     summarise(
-#       G=sum(weightedG),
-#       H=sum(weightedH)
-#     ) %>% mutate(
-#       mean.HR = G/H,
-#       mean.estimate = log(G/H),
-#       mean.std.error = sqrt(1/G + 1/H),
-#       mean.HR.lower = exp(mean.estimate-1.96*mean.std.error),
-#       mean.HR.upper = exp(mean.estimate+1.96*mean.std.error),
-#       mean.HR.pValue = pnorm(0,mean.estimate,mean.std.error),
-#       model = "Weighted PLME HR",
-#       term = "sGeneNegative"
-#     )
-#   
-#   return(PLME_HR)
-# }
-
-
-
+#' Conduct a survival analysis multiple times over bootstrapped data
+#'
+#' @param coxFinal - multiple replicates of survival data containing a "boot" column specifying the replicate nymber
+#' @param modelName - a description of the model
+#' @param modelFormula - the specification of the model
+#'
+#' @return - a tidy summary table of 1 row per HR from the model
+#'
+#' @examples
+bootstrappedCoxModel = function(coxFinal, modelName, modelFormula) {
+  message("Calculating ",modelName)
+  bootSurvModels = coxFinal %>% group_by(boot) %>% group_modify(function(d,g,...) {
+    survModel = survival::coxph(modelFormula, d)
+    out = tidyCoxmodel(survModel) %>% mutate(model=modelName, N=d %>% nrow())
+    rm(survModel)
+    return(out)
+  })
+}
 
 ## Formatting functions ----
+
+#' Extract the headline values from the cox model result
+#' @param survModel - the cox model
+#'
+#' @return a dataframe of HR and beta values for each component of the model
+#'
+#' @examples
+tidyCoxmodel = function(survModel) {
+  # TODO: Dig N out from here
+  broom::tidy(survModel) %>% bind_cols(as.data.frame(confint(survModel))) %>% 
+    mutate(
+      HR = exp(estimate), 
+      HR.lower=exp(`2.5 %`), 
+      HR.upper=exp(`97.5 %`), 
+      HR.pValue = p.value)
+}
+
+# Internal function to generate a printable summary table of information from raw cox data.
 summaryTable = function(tmp,bootstraps=1) {
   groupPercent = function(df) df %>% summarise(N=as.integer(round(n()/bootstraps))) %>% mutate(`%age`=sprintf("%1.1f%%",N/sum(N)*100))
   groupMean = function(df,col) df %>% filter(is.finite({{col}})) %>% summarise(N=as.integer(round(n()/bootstraps)),  `mean (SD)`=sprintf("%1.1f (\u00B1%1.1f)",mean({{col}},na.rm=TRUE),sd({{col}},na.rm=TRUE)))
@@ -727,7 +755,7 @@ summaryTable = function(tmp,bootstraps=1) {
   ) %>% ungroup()
 }
 
-
+# Internal function to generate a printable summary table of the analysis.
 summariseAnalysisRun = function(run) {
   if(is.data.frame(run)) {
     tmp = run
@@ -746,6 +774,7 @@ summariseAnalysisRun = function(run) {
   return(tmp2 %>% select(model,everything()))
 }
 
+# combine cox model results from bootstraps combined Beta is the mean or mean, and mean of std.error, and pValue as the mean of pValue. HR is then recalculated from Betas 
 combineBootstraps = function(analysisResult) {
   analysisResult %>% group_by(model,term) %>% summarise(
     across(
@@ -759,6 +788,8 @@ combineBootstraps = function(analysisResult) {
   )
 }
 
+# pretty print the hazard table, re-labelling colums as required
+# TODO: if we change the cox models we use we need to make sure new predictors are added here, 
 prettyPrintSummary = function(summaryDf) {
   out = summaryDf %>% group_by(model,term) %>% summarise(
     `Hazard rate (95% CI)`=sprintf("%1.1f (%1.1f \u2013 %1.1f)",
