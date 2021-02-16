@@ -1,0 +1,310 @@
+---
+title: "Supplementary Materials"
+author: "Rob Challen"
+date: "24/01/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+
+library(tidyverse)
+library(patchwork)
+library(survival)
+library(survminer)
+
+# optional dependency:
+
+if (dir.exists("~/Git/standard-print-output/")) {
+  devtools::load_all("~/Git/standard-print-output/")
+  standardPrintOutput::setDefaults()
+  spo = TRUE
+} else {
+  spo = FALSE
+}
+
+options(dplyr.summarise.inform = FALSE)
+
+# load functions
+source("./new-variant-mortality.R")
+datadate="20210212"
+outdir = paste0("~/Dropbox/covid19/new-variant/",datadate,"/")
+if(!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
+outfile = function(x) paste0(outdir,x)
+```
+
+# Supplementary materials
+
+```{r}
+## Load the same data as the main analysis ----
+if(!exists("coxData")) 
+  coxData = loadData(date = datadate, latestDate = as.Date("2021-01-28"))
+
+defaultAgeTol = 5
+defaultSpecTol = 1
+
+models = list(
+  #`S gene only`=Surv(time,status) ~ sGene, 
+  `S gene + age` = Surv(time,status) ~ sGene+ageDec,
+  `S gene + N gene CT + age`=Surv(time,status) ~ sGene+CT_N_10+ageDec#, 
+  #`S gene + age + gender` = Surv(time,status) ~ sGene+ageDec+sex,
+  #`S gene + all covariates` = Surv(time,status) ~ sGene+ageDec+sex+imd_decile+ethnicity_final #+residential_category
+)
+
+if(!exists("run30")) 
+  run30 = runAnalysis(
+    coxData, sGeneCtThreshold = 30, ctThreshold = 30,
+    ageTolerance = defaultAgeTol,specimenDateTolerance=defaultSpecTol,
+    modelFormula = models,resolutionStrategy = "node sample", bootstraps = 50,
+    includeRaw=FALSE,includeMatched = TRUE)
+```
+
+## Unmatched data set biases
+
+These 
+
+```{r}
+
+coxData30 = coxData %>% interpretSGene()
+
+p1 = ggplot(
+  coxData30 %>% mutate(deathReport = cut(deathReportDelay,breaks = c(-Inf,0:14+0.1,Inf), labels = c(as.character(0:14),">14"))) %>% filter(!is.na(deathReport) & sGene != "Equivocal"),
+  aes(x=deathReport, fill=sGene)) + geom_bar(aes(y = (..count..)/sum(..count..)*100),position = "dodge", width=0.7)+ylab("percentage") + xlab("time from death to report (days)")+guides(fill=guide_legend(title="S Gene status"))
+
+
+
+p2 = ggplot(
+  coxData30 %>% filter(!is.na(deathReportDelay) & sGene != "Equivocal"),
+  aes(x=deathReportDelay, colour=sGene))+stat_ecdf(geom = "step")+ylab("P(death reported before t|died)")+xlab("time since date of death")+coord_cartesian(xlim=c(0,20))+guides(colour=guide_legend(title="S Gene status"))
+
+(p1+p2+plot_annotation(tag_levels = "A")+plot_layout(guides = "collect")) %>% standardPrintOutput::saveThirdPageFigure(outfile("FigS2_DeathReportingDelays"))
+
+```
+
+```{r}
+
+# devtools::load_all("~/Git/uk-covid-datatools/")
+# ukcovidtools::reload()
+# # grab some ethnicity data. Not going to be used at this point.
+# tmp2 = dpc$demog$getDemographicsWithEstimatedEthnicity()
+# tmp3 = tmp2 %>% filter(is.finite(count)) %>% inner_join(dpc$codes$getTransitiveClosure() %>% filter(fromCodeType=="LSOA",toCodeType=="NHSER"),by=c("code"="fromCode")) %>% group_by(toCode,ethnicity_final) %>% summarise(count=sum(count))
+# popByRegion = tmp3 %>% rename(code = toCode, population = count) #%>% dpc$codes$findNamesByCode()
+# popByRegion %>% write_csv("~/Git/vui-202012-1/popDataByEthnicity.csv")
+# 
+# # 
+# # # get overall population by region
+# tmp = dpc$demog$getDetailedDemographics()
+# popData = tmp %>% semi_join(dpc$codes$getTransitiveClosure() %>% filter(toCode=="E92000001"),by=c("code"="fromCode")) %>% group_by(age) %>% summarise(count = sum(count)) %>% mutate(percent = count/sum(count))
+# popData %>% write_csv("~/Git/vui-202012-1/popData.csv")
+
+popByRegion = readr::read_csv("~/Git/vui-202012-1/popDataByEthnicity.csv")
+popData = readr::read_csv("~/Git/vui-202012-1/popData.csv")
+#coxData3 = coxData3 %>% left_join(popByRegion, by=c("NHSER_code"="code","ethnicity_final"),suffix=c("",".ethn"))
+```
+
+## Age distributions of cases by sGene status
+
+```{r}
+
+popData2 = popData %>% filter(age>30) %>% mutate(percent = count/sum(count))
+
+fig1 = ggplot(coxData30,aes(colour=sGene,x=age))+
+  geom_line(aes(y = ..prop..), stat="count")+
+  geom_line(data=popData2, aes(x=age,y=percent),colour="grey60",inherit.aes = FALSE)+
+  ylab("density")+coord_cartesian(xlim=c(30,NA))
+  
+
+fig1 %>% standardPrintOutput::saveThirdPageFigure(outfile("FigS3_AgeProfile"))
+  
+```
+
+# Cox Diagnositics
+
+* some basic checks on the matched pairs data
+* are the counts over time sensible, 
+* are the censored dates sensible and identical, 
+* are the cumulative probability of death<t|died sensible
+* this is not included in the paper
+
+```{r}
+p1 = ggplot(run30$coxMatchedData, aes(x=time,colour=sGene,shape=deathStatus))+geom_point(stat="count")+scale_y_log10()+xlab("time since first positive test")+ylab("event count")
+p2 = ggplot(run30$coxMatchedData %>% filter(status==0),aes(x=time,colour=sGene))+ stat_ecdf(geom = "step")+ylab("P(censored before t|censored)")+coord_cartesian(xlim=c(0,NA))+xlab("time since first positive test")+facet_wrap(vars(sGene),ncol=2)
+p3 = ggplot(run30$coxMatchedData %>% filter(status==1),aes(x=time,colour=sGene))+ stat_ecdf(geom = "step")+ylab("P(died before t|died)")+xlab("time since first positive test")
+
+tmpFig = p2+p3+patchwork::plot_annotation(tag_levels = "A")+patchwork::plot_layout(guides="collect")
+p2
+p2 %>% standardPrintOutput::saveThirdPageFigure(outfile("FigS1_CoxDiagnostics"))
+rm(p1,p2,p3,tmpFig)
+```
+
+* Additional models
+* Shinozoku HR
+
+```{r}
+
+models = list(
+  `S gene only`=Surv(time,status) ~ sGene, 
+  #`S gene + age` = Surv(time,status) ~ sGene+ageDec,
+  #`S gene + N gene CT + age`=Surv(time,status) ~ sGene+CT_N_10+ageDec, 
+  `S gene + all covariates` = Surv(time,status) ~ sGene+ageDec+sex+imd_decile+ethnicity_final)
+
+allModels = bind_rows(lapply(names(models), function(model) run30$coxMatchedData %>% bootstrappedCoxModel(modelName = model, modelFormula = models[[model]])))
+
+tmp = allModels %>% combineBootstraps() %>% prettyPrintSummary() 
+tmp = tmp %>% bind_rows(run30$table5Data %>% combineBootstraps() %>% prettyPrintSummary())
+
+tmp %>% readr::write_csv(outfile("TableS1_FullCovariateModel(Draft)")) 
+tmp %>% standardPrintOutput::saveTable(outfile("TableS1_FullCovariateModel(Draft)"))
+
+```
+
+
+* We also wanted to look at the effect of a nonlinear age term
+
+```{r}
+coxFinal = run30$coxMatchedData
+
+modelFormula = Surv(time,status) ~ sGene+pspline(ageDec,df=4)
+mfit = survival::coxph(modelFormula, data=coxFinal %>% filter(boot==1), x=TRUE)
+tp = termplot(mfit, term=2, se=TRUE, col.term=1, col.se=1, plot=FALSE)
+
+# ggplot2 version
+# edit scale_y_continuous breaks to set different y-axis values to be shown
+# edit the geom color settings for different colors
+# add title, subtitle, and/or caption to labs as needed
+spline_plot_gg <- function(tp_obj, var_name = "", var_label = var_name, input_range = NULL){
+    dat <- tp_obj[[var_name]]
+    if(!is.null(input_range)){
+        dat <- dat[dat$x >= input_range[1] & dat$x <= input_range[2], ]
+    }
+    ggplot(dat, aes(x, exp(y))) +
+        geom_ribbon(aes(ymin = exp(y - 1.96 * se), ymax = exp(y + 1.96 * se)), fill = "lightgrey") + 
+        geom_line(color = "black") +
+        scale_y_continuous(trans = "log", breaks = c(0.2, 0.5, 1, 2, 5, 20, 50)) +
+        theme_bw() +
+        labs(
+            x = var_label,
+            y = "Relative death rate")
+}
+
+p2 = tp %>% spline_plot_gg(var_name="ageDec", var_label = "Age (decades)") + coord_cartesian(xlim=c(NA,8), ylim=c(NA,100))
+
+p2 %>% saveSixthPageFigure(outfile("FigureS3_AgeSpline"))
+
+```
+
+* We also looked to proportional hazards violation
+
+```{r}
+
+coxFinal = run30$coxMatchedData
+
+modelFormula = Surv(time,status) ~ sGene #+ageDec
+phViol = coxFinal %>% bootstrappedPHViolationTest("S gene only", Surv(time,status) ~ sGene)
+tmp = phViol %>% group_by(method,term) %>% summarise(p.mean = mean(p)) 
+tmp %>% filter(term != "GLOBAL") %>% write_csv(outfile("TableS4_CoxPHViolation"))
+tmp %>% filter(term != "GLOBAL") %>% standardPrintOutput::saveTable(outfile("TableS4_CoxPHViolation"))
+```
+
+```{r}
+
+
+
+
+firstEra = coxFinal %>% mutate(
+  status = ifelse(time > 14, 0, status),
+  time = ifelse(time > 14, 14, time),
+  era = "day 0-14"
+)
+
+secondEra = coxFinal %>% filter(time>14) %>% mutate(
+  time = time-14,
+  era = "day 15-28"
+)
+
+coxTimeDep = bind_rows(firstEra,secondEra)
+
+phViolWithEra = coxTimeDep %>% bootstrappedPHViolationTest("S gene only", Surv(time,status) ~ sGene)
+tmp = phViolWithEra %>% group_by(method,term) %>% summarise(p.mean = mean(p))
+tmp %>% filter(term != "GLOBAL") %>% write_csv(outfile("TableS5_CoxPHViolationFixed"))
+tmp %>% filter(term != "GLOBAL") %>% standardPrintOutput::saveTable(outfile("TableS5_CoxPHViolationFixed"))
+```
+
+* Time varying model with sGene and era
+
+```{r}
+modelTimedepFormula = Surv(time,status) ~ era+sGene:era
+bootTimeDepModels = coxTimeDep %>% bootstrappedCoxModel("Early vs Late",modelTimedepFormula)
+tmp = bootTimeDepModels %>% combineBootstraps() %>% prettyPrintSummary() 
+tmp %>% readr::write_csv(outfile("TableS4_TimeVaryingModel(Draft).csv"))
+tmp %>% standardPrintOutput::saveTable(outfile("TableS4_TimeVaryingModel(Draft)"))
+```
+
+
+# Bootstrapping
+
+* graph nature of matches
+
+```{r}
+# Interpret S Gene cutoffs
+coxData30 = coxData %>% interpretSGene()
+# make a set of matched pairs
+matches = coxData30 %>% createPairedMatches(ageTolerance = 5, specimenDateTolerance = 1, matchOn = c("sex","imd_decile","LTLA_name","ethnicity_final","ageCat"), max=Inf)
+```
+
+```{r}
+tmp = bind_rows(
+  matches %>% group_by(specimen_date = specimen_date.neg) %>% summarise(enframe(quantile(order.neg, probs=c(0.025,0.25,0.5,0.75,0.975)))) %>% mutate(`S gene` = "negative"),
+  matches %>% group_by(specimen_date = specimen_date.pos) %>% summarise(enframe(quantile(order.pos, probs=c(0.025,0.25,0.5,0.75,0.975)))) %>% mutate(`S gene` = "positive")
+) %>% pivot_wider(names_from = "name", values_from="value")
+
+tmp2 = tmp %>% group_by(`S gene`) %>% arrange(specimen_date) %>% mutate(across(ends_with("%"), .fns =  ~ stats::filter(.x,filter=rep(1/7,7),sides = 1), .names = "Roll.{.col}"))
+
+p3 = ggplot(tmp2, aes(x=specimen_date,y=`Roll.50%`,colour = `S gene`)) +
+  #geom_ribbon(aes(ymin=`Roll.2.5%`,ymax=`Roll.97.5%`,fill = `S gene`),colour=NA,alpha=0.1) + 
+  geom_ribbon(aes(ymin=`Roll.25%`,ymax=`Roll.75%`,fill = `S gene`),colour=NA,alpha=0.3) + 
+  geom_line() + ylab("potential matches") + xlab("Sample date")
+
+p3 %>% standardPrintOutput::saveThirdPageFigure(outfile("FigureS5_PotentialMatches"))
+
+```
+
+* graph structure
+
+
+
+```{r}
+
+coxFinal = coxData30 %>% filter(sGene != "Equivocal") %>% mutate(sGene = forcats::fct_drop(sGene))
+
+noneMatchModel = noneMatch %>% pairedMatchesToCoxData(coxFinal)  %>% bootstrappedCoxModel("No resolution", Surv(time,status) ~ sGene+ageDec) 
+nodeSampleMatchModel = nodeSampleMatch %>% pairedMatchesToCoxData(coxFinal)  %>% bootstrappedCoxModel("Edge sampling", Surv(time,status) ~ sGene+ageDec) 
+edgeSampleMatchModel = edgeSampleMatch %>% pairedMatchesToCoxData(coxFinal)  %>% bootstrappedCoxModel("Node sampling", Surv(time,status) ~ sGene+ageDec) 
+
+strategyComp = bind_rows(
+  noneMatchModel,
+  edgeSampleMatchModel,
+  nodeSampleMatchModel
+) %>% combineBootstraps() %>% prettyPrintSummary() %>% rename(Strategy = Model)
+
+strategyComp %>% group_by(Strategy,Predictor) %>% standardPrintOutput::saveTable(outfile("TableS7_StrategyComparison"))
+
+```
+
+* interpretations of bootstraps
+
+```{r}
+
+tmp = run30$table4Data %>% filter(model == "S gene + age" & term=="sGeneNegative") %>% group_by(boot,estimate,std.error) %>% summarise(x = seq(1,2.5,length.out = 101)) %>%
+  mutate(y = dnorm(log(x),estimate,std.error))
+
+tmp2 = tmp %>% ungroup() %>% group_by(x) %>% summarise(y.mix=mean(y))
+  
+
+p2 = ggplot(tmp,aes(x=x,y=y,group=boot)) + geom_path(alpha=0.3) +geom_path(data=tmp2, aes(x=x,y=y.mix), inherit.aes = FALSE, colour = "red", size=1.5)+xlab("HR estimate")+ylab("Density") + geom_vline(xintercept=c(1.64,1.32,2.04), colour="red", linetype="dashed")
+p2 %>% standardPrintOutput::saveThirdPageFigure(outfile("FigureS6_BootstrapHRCombination"))
+
+
+```
+
+
+

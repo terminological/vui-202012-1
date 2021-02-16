@@ -193,7 +193,60 @@ ggplot(tmp %>% filter(order.neg<11,order.pos<11), aes(x=order.neg,y=order.pos,fi
 ggplot(tmp, aes(x=order.neg,y=order.pos,fill=as.numeric(meanDate),label=n)) + geom_tile()+scale_fill_gradient2(low="purple",high="green",mid="yellow",midpoint = midpoint)
 ```
 
+## Investigation of residual repeats across replicates
 
+```{r}
+# tidygraph needs sequential node ids.
+# offset = min(c(matches$FINALID.neg,matches$FINALID.pos))
+# graph = tidygraph::tbl_graph(edges = matches %>% mutate(to = FINALID.neg-offset+1, from=FINALID.pos-offset+1) %>% select(to,from),directed = FALSE)
+# ggraph::ggraph(graph) + geom_edge_link()
+# 
+# tmp = bind_rows(
+#   matches %>% group_by(FINALID.neg) %>% summarise(boots = n()) %>% group_by(boots) %>% count() %>% arrange(desc(boots)) %>% mutate(`S gene` = "negative", group="all"),
+#   matches %>% group_by(FINALID.pos) %>% summarise(boots = n()) %>% group_by(boots) %>% count() %>% arrange(desc(boots)) %>% mutate(`S gene` = "positive", group="all"),
+#   matches %>% filter(status.neg==1) %>% group_by(FINALID.neg) %>% summarise(boots = n()) %>% group_by(boots) %>% count() %>% arrange(desc(boots)) %>% mutate(`S gene` = "negative", group="died"),
+#   matches %>% filter(status.pos==1) %>% group_by(FINALID.pos) %>% summarise(boots = n()) %>% group_by(boots) %>% count() %>% arrange(desc(boots)) %>% mutate(`S gene` = "positive", group="died")
+# )
+# 
+# tmp = tmp %>% group_by(`S gene`,group) %>% mutate(percent = n/sum(n)) %>% arrange(boots) %>% mutate(cumPerc = cumsum(percent))
+# 
+# # tmp %>% group_by(`S gene`) %>% summarise(moment = sum(boots*n)/sum(n))
+# 
+# p1 = ggplot(tmp,aes(x=boots,y=percent*100,fill=`S gene`))+geom_bar(stat="identity",width=0.6,position = "dodge")+xlab("Number of replicates")+ylab("Percentage of deaths")+facet_wrap(vars(group), ncol=1)+coord_cartesian(xlim=c(NA,40))
+# p2 = ggplot(tmp,aes(x=boots,y=cumPerc*100,colour=`S gene`))+geom_step()+xlab("Number of replicates")+ylab("Percentage of deaths")+facet_wrap(vars(group), ncol=1)+coord_cartesian(xlim=c(NA,40))
+# 
+# fig1 = p1+p2+patchwork::plot_annotation(tag_levels = "A")+patchwork::plot_layout(ncol=2, guides = "collect")
+# fig1 %>% standardPrintOutput::saveThirdPageFigure(outfile("FigureS7_PotentialMatchPerReplicates"))
+# 
+# tmp %>% group_by(`S gene`) %>% summarise(moment = sum(boots*n)/sum(n)) %>% standardPrintOutput::saveTable(outfile("TableS7_PotentialMatchMoments"))
+```
+
+```{r}
+noneMatch = matches %>% uniquifyPairs(resolutionStrategy = "unpaired cases")
+nodeSampleMatch = matches %>% uniquifyPairs(resolutionStrategy = "node sample",bootstraps = 50)
+edgeSampleMatch = matches %>% uniquifyPairs(resolutionStrategy = "edge sample",bootstraps = 50)
+```
+
+```{r}
+
+tmp = edgeSampleMatch %>% pairedMatchesToCoxData(coxFinal) %>% group_by(FINALID, sGene, status) %>% summarise(boots = n()) %>% group_by(boots, sGene, status) %>% count() %>% arrange(desc(boots))
+tmp = tmp %>% group_by(sGene,status) %>% mutate(percent = n/sum(n)) %>% arrange(boots) %>% mutate(cumPerc = cumsum(percent))
+tmp = tmp %>% rename(`S gene` = sGene)
+tmp = tmp %>% mutate(status = ifelse(status == 1,"died","censored"), strategy = "edge sampling")
+
+combined = tmp
+
+tmp = nodeSampleMatch %>% pairedMatchesToCoxData(coxFinal) %>% group_by(FINALID, sGene, status) %>% summarise(boots = n()) %>% group_by(boots, sGene, status) %>% count() %>% arrange(desc(boots))
+tmp = tmp %>% group_by(sGene,status) %>% mutate(percent = n/sum(n)) %>% arrange(boots) %>% mutate(cumPerc = cumsum(percent))
+tmp = tmp %>% rename(`S gene` = sGene)
+tmp = tmp %>% mutate(status = ifelse(status == 1,"died","censored"), strategy = "node sampling")
+
+combined = combined %>% bind_rows(tmp)
+
+# p1 = ggplot(tmp,aes(x=boots,y=percent*100,fill=`S gene`))+geom_bar(stat="identity",width=0.6,position = "dodge")+xlab("Number of replicates")+ylab("Percentage of deaths")+facet_wrap(vars(status), ncol=1)+coord_cartesian(xlim=c(NA,50))
+p1 = ggplot(combined,aes(x=boots,y=cumPerc*100,colour=`S gene`,linetype=status))+geom_step()+xlab("Number of replicates")+ylab("Percentage")+coord_cartesian(xlim=c(NA,50))+facet_wrap(vars(strategy))
+
+```
 
 
 

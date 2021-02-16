@@ -132,25 +132,28 @@ loadData = function(dir="~/Data/new-variant",date, censorLength = 28, B117Date =
     )
   
   if (identical(latestDate,NULL)) latestDate = max(dll$dod,na.rm=TRUE)
+  censoringDate = max(dll$dod,na.rm=TRUE)
   
   # Join the line list, deaths line list and uniquified sGene line list by FINALID
   coxData = ll %>% 
     left_join(sgllUniq, by="FINALID", suffix=c("",".sgene")) %>% 
     left_join(dll %>% mutate(FINALID=as.numeric(finalid)), by=c("FINALID"),suffix=c("",".death")) %>% 
-    p_clear() %>%
-    p_status(
-      TRUE ~ "{count} linked patients"
-    ) %>% 
     p_exclude(
-      is.na(specimen_date.sgene) ~ "{count} patients with unknown S gene status",
       specimen_date < earliestDate ~ "{count} diagnosed before {earliestDate}",
       specimen_date > latestDate ~ "{count} diagnosed after {latestDate}",
-    ) %>%
+      age<minAge ~ "{count} with age<{minAge}"
+    ) %>% 
+    p_clear() %>%
     p_status(
-      TRUE ~ "{count} included patients",
-      !is.na(dod) ~ "of whom {count} died",
+      TRUE ~ "{count} cases in over {minAge}s between\n{earliestDate} and {latestDate}"
+    ) %>% 
+    p_exclude(
+      is.na(specimen_date.sgene) ~ "{count} cases ({sprintf('%1.1f',count/total*100)}%) with unknown S gene status",
+    )  %>%
+    p_status(
+      TRUE ~ "{count} cases\nwith known S gene status"
     )
-  
+  #browser()
   coxData2 = coxData %>% 
     p_select(
       FINALID, 
@@ -160,6 +163,7 @@ loadData = function(dir="~/Data/new-variant",date, censorLength = 28, B117Date =
       specimen_date.sgene, 
       dateadmission_NHSE, 
       dod,
+      report_date_earliest,
       death_type28, 
       age,sex,imd_decile,
       P2CH3CQ,P2CH1CQ,P2CH2CQ,P2CH4CQ, # gene copy numbers
@@ -172,10 +176,11 @@ loadData = function(dir="~/Data/new-variant",date, censorLength = 28, B117Date =
       died = !is.na(dod),
       diedWithin28days = died & as.numeric(dod-specimen_date) <= censorLength, # This is a definition of death within 28 days not relying on line list definition
       dodAt28days = ifelse(diedWithin28days, dod, NA), # this is the date of death (or NA if it is >28 days after sgene specimen date or there is no specimen)
-      censoredDate = pmin(latestDate, specimen_date+censorLength,na.rm = TRUE) # earliest of last recorded death or specimen date
+      censoredDate = pmin(censoringDate, specimen_date+censorLength,na.rm = TRUE) # earliest of last recorded death or specimen date
     ) %>% 
     p_mutate(
       reportingDelay = as.numeric(lab_report_date-specimen_date),
+      deathReportDelay = as.integer(report_date_earliest-dod),
       sGeneDelay = as.numeric(specimen_date.sgene-specimen_date),
       admissionDelay = as.numeric(dateadmission_NHSE-specimen_date),
       time = ifelse(diedWithin28days, dodAt28days-as.numeric(specimen_date), censoredDate-as.numeric(specimen_date)), 
@@ -184,7 +189,9 @@ loadData = function(dir="~/Data/new-variant",date, censorLength = 28, B117Date =
     p_mutate(
       ageCat = cut(age, breaks = c(-Inf,30,60,70,80,Inf), labels = c("<30","30-59","60-69","70-79","80+"), right=FALSE),
       LTLA_name =  as.factor(LTLA_name),
-      preB117 = specimen_date < B117Date
+      preB117 = specimen_date < B117Date,
+      ageDec = age/10,
+      
     )
   
   # TODO: We may need to consider the data stratified by sGene status from this point in the future, but this would need to assume a CT threshold
@@ -197,7 +204,6 @@ loadData = function(dir="~/Data/new-variant",date, censorLength = 28, B117Date =
       is.na(imd_decile) ~ "{count} with missing IMD",
       is.na(sex) | sex == "Unknown" ~ "{count} with missing or unknown gender",
       is.na(age) ~ "{count} with unknown age",
-      age<minAge ~ "{count} with age<{minAge}",
       is.na(ethnicity_final) ~ "{count} with unknown ethnicity",
       admissionDelay < 0 ~ "{count} admitted before pillar 2 test taken",
       reportingDelay < 0 | reportingDelay>=20 ~ "{count} with reporting delay <0 or >19 days",
@@ -213,8 +219,7 @@ loadData = function(dir="~/Data/new-variant",date, censorLength = 28, B117Date =
       deathStatus = ifelse(diedWithin28days,"Dead <28 days","Other")
     ) %>%
     p_status(
-      TRUE ~ "{count} passing data quality checks",
-      !is.na(dod) ~ "of whom {count} died",
+      TRUE ~ "{count} cases\npassing data quality checks"
     )
   
   return(coxData3)
@@ -254,7 +259,9 @@ interpretSGene = function(sGeneLineList, S_CT = 30, ORF1ab_CT = 30, N_CT = 30, C
         S_undetect & N_pos & ORF1ab_pos & Control_pos ~ "Negative",
         TRUE ~ "Equivocal"
       ),
-      CT_N = ifelse(P2CH2CQ > 0, P2CH2CQ, 40)
+      CT_N = ifelse(P2CH2CQ > 0, P2CH2CQ, 40),
+      CT_N_norm = (CT_N - mean(CT_N))/sd(CT_N),
+      CT_N_10 = CT_N/10
     ) %>% 
     p_mutate(
       result = ifelse(!Control_pos,"No control",paste0(ifelse(S_pos,"S+","S-"),ifelse(N_pos,"N+","N-"),ifelse(ORF1ab_pos,"ORF+","ORF-")))
@@ -273,9 +280,9 @@ interpretSGene = function(sGeneLineList, S_CT = 30, ORF1ab_CT = 30, N_CT = 30, C
     p_status(
       .headline = params,
       # sGene == "Unknown" ~ "{count} with unknown S status",
-      sGene == "Positive" ~ "{count} with S+ status",
-      sGene == "Negative" ~ "{count} with S- status",
-      sGene == "Equivocal" ~ "{count} with equivocal S status",
+      sGene == "Positive" ~ "{count} ({sprintf('%1.1f',count/total*100)}%) with S+ status",
+      sGene == "Negative" ~ "{count} ({sprintf('%1.1f',count/total*100)}%) with S- status",
+      sGene == "Equivocal" ~ "{count} ({sprintf('%1.1f',count/total*100)}%) with equivocal S status",
     )
 }
 
@@ -298,11 +305,11 @@ createPairedMatches = function(coxData, ageTolerance, specimenDateTolerance,matc
     p_exclude(
       # preB117 ~ "{count} predating VOC emergence",
       # sGene == "Unknown" ~ "{count} with unknown S status",
-      sGene == "Equivocal" ~ "{count} with equivocal S status"
+      sGene == "Equivocal" ~ "{count} equivocal results"
     ) %>%
     p_modify(
       .headline = "Matching by:\n{m}\nwith tolerances: age \u00b1{ageTolerance} years & sample date \u00b1{specimenDateTolerance} days",
-      .message = "from {count.in} individuals, we found {count.out} pairs",
+      .message = "{count.out} ({sprintf('%1.1f',count.out/count.in*100)}%) with at least 1 matched case",
       function(d) {
         
         d = d %>% select(all_of(matchOn),age,specimen_date,FINALID,sGene,status,time)
@@ -377,9 +384,9 @@ createPairedMatches = function(coxData, ageTolerance, specimenDateTolerance,matc
 #'
 #' @examples
 uniquifyPairs = function(pairedMatches, resolutionStrategy, bootstraps, ratio.neg=NULL, ratio.pos=NULL) {
-  message = glue::glue("Selecting unique pairs by {resolutionStrategy} with {bootstraps} replicates.\n",
-                      "Before sampling the matched set contains:\n",
-                      "{n_distinct(pairedMatches$FINALID.neg)} unique S- cases and {n_distinct(pairedMatches$FINALID.pos)} unique S+ controls")
+  #message = glue::glue("Selecting unique pairs by random sampling with {bootstraps} replicates.\n")
+                      #"{resolutionStrategy} Before sampling the matched set contains:\n",
+                      #"{n_distinct(pairedMatches$FINALID.neg)} unique S- cases and {n_distinct(pairedMatches$FINALID.pos)} unique S+ controls")
   
   if (!is.null(ratio.neg) & ! is.null(ratio.pos)) {
     pairedMatched = pairedMatches %>%
@@ -390,7 +397,7 @@ uniquifyPairs = function(pairedMatches, resolutionStrategy, bootstraps, ratio.ne
   }
   
   out = pairedMatches %>% p_modify(
-    .message = message,
+    #.message = message,
     function(d) {
   
   
@@ -549,6 +556,7 @@ uniquifyPairs = function(pairedMatches, resolutionStrategy, bootstraps, ratio.ne
 #'
 #' @examples
 pairedMatchesToCoxData = function(matches, coxData) {
+  boots = max(matches$boot)
   out = matches %>% p_modify(
     function (d) {
       if (!"boot" %in% colnames(d)) d = d %>% mutate(boot=1)
@@ -558,20 +566,22 @@ pairedMatchesToCoxData = function(matches, coxData) {
       ))
     }
   ) %>% 
-    p_group_by(sGene) %>% 
+    p_group_by(sGene, .message = glue::glue("Selecting unique pairs by random sampling\nwithout replacement in {boots} replicates",boots=boots)) %>% 
     p_status_summary(
       count = n(),
       boots = n_distinct(boot),
       died = sum(ifelse(diedWithin28days,1,0)),
       .glue = c(
-        "{sprintf('%1.0f',count/boots)} patients",
-        "of whom {sprintf('%1.0f',died/boots)} died within 28 days",
-        "and {sprintf('%1.0f',(count-died)/boots)} survived for 28 days"
+        "{sprintf('%1.0f',ceiling(count/boots))} patients",
+        "of whom {sprintf('%1.0f',ceiling(died/boots))} died within 28 days",
+        "and {sprintf('%1.0f',ceiling((count-died)/boots))} survived for 28 days (or until 2021-02-12)"
       )
     ) %>% p_ungroup(
       count = n(),
+      pos = sum(sGene=="Positive"),
+      neg = sum(sGene=="Negative"),
       boots = n_distinct(boot),
-      .glue = c("{sprintf('%1.0f',count/boots)} matched patients.")
+      .glue = c("{sprintf('%1.0f',ceiling(pos/boots)+ceiling(neg/boots))} matched patients.")
     )
   return(out)
 }
@@ -646,12 +656,12 @@ runAnalysis = function(
   }
   
   # https://ete-online.biomedcentral.com/articles/10.1186/s12982-017-0060-8
-  # this implements a paired data direct measure of hazard rate
+  # this implements a paired data direct measure of hazard ratio
   
   negMatched = coxFinal %>% filter(sGene=="Negative")
   posMatched = coxFinal %>% filter(sGene=="Positive")
   if(nrow(posMatched) == nrow(negMatched)) {
-    message("Paired data hazard rate can be directly calculated as data is 1:1")
+    message("Paired data hazard ratio can be directly calculated as data is 1:1")
     result$table5Data = matchesSelected %>% group_by(boot) %>% group_modify(function(d,g,...) {
       tibble(
         model = c("PLME HR"),
@@ -720,6 +730,45 @@ bootstrappedCoxModel = function(coxFinal, modelName, modelFormula) {
   })
 }
 
+
+bootstrappedPHViolationTest = function(coxFinal, modelName, modelFormula) {
+  
+  m = 1
+  n = 1
+  
+  phViol = coxFinal %>% group_by(boot) %>% group_modify(function(d,g,...) {
+  
+    survModel = survival::coxph(modelFormula, data=d, x=TRUE)
+    test.ph = cox.zph(survModel)
+    out = test.ph$table %>% as.data.frame() %>% mutate(term = rownames(test.ph$table)) %>% mutate(model=modelName, method = "cox.zph") %>% select(-chisq, -df)
+    rm(survModel,test.ph)
+  
+  # https://bmcmedresmethodol.biomedcentral.com/articles/10.1186/1471-2288-13-88#Sec2
+    
+    survModel2 = survival::coxph(Surv(time,status)~sGene, data=d, x=TRUE)
+    sresid = resid(survModel2, type = "schoenfeld")
+    sfit = survfit(Surv(time,status)~1, data = d)
+    sest = sfit$surv[sfit$n.event>0]
+    ecnt = sfit$n.event[sfit$n.event>0]
+    km = rep(sest, ecnt)
+    pvalue1 = cor.test(km,sresid^(m/n),method = "pearson")$p.value
+    pvalue2 = cor.test(rank(sort(d$time[d$status==1])),sresid,method = "pearson")$p.value
+    pvalue3 = cor.test(sort(d$time[d$status==1]),sresid,method = "pearson")$p.value
+    rm(survModel2,sresid,sfit,sest,ecnt,km)
+    
+    out = out %>% bind_rows(tibble(
+      term = "sGene",
+      method = c("Event time correlation","Rank event time correlation","KM Estimate correlation"),
+      p = c(pvalue1,pvalue2,pvalue3),
+      model=modelName
+    ))
+    
+    return(out)
+  })
+  
+  return(phViol)
+}
+
 ## Formatting functions ----
 
 #' Extract the headline values from the cox model result
@@ -740,13 +789,13 @@ tidyCoxmodel = function(survModel) {
 
 # Internal function to generate a printable summary table of information from raw cox data.
 summaryTable = function(tmp,bootstraps=1) {
-  groupPercent = function(df) df %>% summarise(N=as.integer(round(n()/bootstraps))) %>% mutate(`%age`=sprintf("%1.1f%%",N/sum(N)*100))
-  groupMean = function(df,col) df %>% filter(is.finite({{col}})) %>% summarise(N=as.integer(round(n()/bootstraps)),  `mean (SD)`=sprintf("%1.1f (\u00B1%1.1f)",mean({{col}},na.rm=TRUE),sd({{col}},na.rm=TRUE)))
+  groupPercent = function(df) df %>% summarise(N=as.integer(ceiling(n()/bootstraps))) %>% mutate(`%age`=sprintf("%1.1f%%",N/sum(N)*100))
+  groupMean = function(df,col) df %>% filter(is.finite({{col}})) %>% summarise(N=as.integer(ceiling(n()/bootstraps)),  `mean (SD)`=sprintf("%1.1f (\u00B1%1.1f)",mean({{col}},na.rm=TRUE),sd({{col}},na.rm=TRUE)))
   bind_rows(
     tmp %>% group_by(value = NHSER_name) %>% groupPercent() %>% mutate(category="Region"),
     tmp %>% group_by(value = ethnicity_final) %>% groupPercent() %>% mutate(category="Ethnicity"),
     tmp %>% group_by(value = sex) %>% groupPercent() %>% mutate(category="Gender"),
-    tmp %>% group_by(value = sGeneEra) %>% groupPercent() %>% mutate(category="S gene"),
+    tmp %>% group_by(value = sGene) %>% groupPercent() %>% mutate(category="S gene"),
     tmp %>% group_by(value = deathStatus) %>% groupPercent() %>% mutate(category="Status"),
     tmp %>% group_by(value = ageCat) %>% groupPercent() %>% mutate(category="Age by category"),
     tmp %>% groupMean(age) %>% mutate(category="Age"),
@@ -776,27 +825,56 @@ summariseAnalysisRun = function(run) {
 
 # combine cox model results from bootstraps combined Beta is the mean or mean, and mean of std.error, and pValue as the mean of pValue. HR is then recalculated from Betas 
 combineBootstraps = function(analysisResult) {
-  analysisResult %>% group_by(model,term) %>% summarise(
-    across(
-      .cols = c(estimate,std.error,HR.pValue), 
-      .fns = c(mean=mean,sd=sd), .names="{.fn}.{.col}" # calculate mean and SD for all bootstrapped parameters
-    )
-  ) %>% mutate(
-    mean.HR = exp(mean.estimate),
-    mean.HR.lower = exp(mean.estimate-1.96*mean.std.error),
-    mean.HR.upper = exp(mean.estimate+1.96*mean.std.error)
-  )
+  
+  # as additive model assuming betas normally distributed
+  # analysisResult %>% group_by(model,term) %>% summarise(
+  #   across(
+  #     .cols = c(estimate,std.error,HR.pValue), # Mean of Beta and mean of Beta SD used to combine distributions assuming a 
+  #     .fns = c(mean=mean,sd=sd), .names="{.fn}.{.col}" # calculate mean and SD for all bootstrapped parameters
+  #   )
+  # ) %>% mutate(
+  #   mean.HR = exp(mean.estimate),
+  #   mean.HR.lower = exp(mean.estimate-1.96*mean.std.error),
+  #   mean.HR.upper = exp(mean.estimate+1.96*mean.std.error)
+  # )
+  
+  # as mixture model assuming Betas normally distributed
+  analysisResult %>% group_by(model,term) %>% group_modify(function(d,g,...) {
+    mus = d$estimate
+    sigmas = d$std.error
+    boots = length(mus)
+    cdf = function(x) LaplacesDemon::pnormm(x, p=rep(1/boots,boots), mu=mus, sigma=sigmas)
+    # solve CDF for quantiles.
+    quantGenFn = function(q) return(function(x) cdf(x)-q)
+    bounds = c(-10,10) #log(c(0.5,5))
+    mean.estimate = mean(mus)
+    estimate.lower = tryCatch(uniroot(quantGenFn(0.025), interval=bounds)$root,error = function(e) 0)
+    estimate.median = tryCatch(uniroot(quantGenFn(0.5), interval=bounds)$root,error = function(e) NaN)
+    estimate.upper = tryCatch(uniroot(quantGenFn(0.975), interval=bounds)$root,error = function(e) Inf)
+    return(tibble(
+      mean.HR.pValue = min(cdf(0),1-cdf(0)),
+      mean.HR = exp(mean.estimate),
+      mean.HR.lower = exp(estimate.lower),
+      mean.HR.upper = exp(estimate.upper),
+      mean.HR.median = exp(estimate.median)
+    ))
+    
+  })
+    
+  
+  
 }
 
 # pretty print the hazard table, re-labelling colums as required
 # TODO: if we change the cox models we use we need to make sure new predictors are added here, 
 prettyPrintSummary = function(summaryDf) {
   out = summaryDf %>% group_by(model,term) %>% summarise(
-    `Hazard rate (95% CI)`=sprintf("%1.1f (%1.1f \u2013 %1.1f)",
+    `Hazard ratio (95% CI)`=sprintf("%1.2f (%1.2f \u2013 %1.2f)",
                                    ifelse(mean.HR<10,mean.HR,Inf),
                                    ifelse(mean.HR.lower<10,mean.HR.lower,Inf),
                                    ifelse(mean.HR.upper<10,mean.HR.upper,Inf)),
     `p value`=scales::pvalue(mean.HR.pValue,0.001)) %>%
+    #mutate(term = term %>% stringr::str_split(":")) %>%
     mutate(
       Value = case_when(
         term %>% stringr::str_starts("sGene") ~ term %>% stringr::str_remove("sGene"),
@@ -807,8 +885,11 @@ prettyPrintSummary = function(summaryDf) {
         TRUE~NA_character_),
       Predictor = case_when(
         term %>% stringr::str_starts("sGene")~"S gene status",
-        term == "CT_N"~"N gene CT value",
+        term == "CT_N"~"N gene CT",
+        term == "CT_N_norm"~"N gene CT (per SD)",
+        term == "CT_N_10"~"N gene CT (per 10 units)",
         term == "age"~"Age",
+        term == "ageDec"~"Age (per decade)",
         term %>% stringr::str_starts("sex")~"Gender",
         term %>% stringr::str_starts("imd_decile")~"IMD",
         term %>% stringr::str_starts("ethnicity_final")~"Ethnicity",
@@ -820,13 +901,13 @@ prettyPrintSummary = function(summaryDf) {
     select(-model,-term)
   out = out %>% bind_rows(
     out %>% select(Model) %>% distinct() %>% mutate(Value = "Positive (ref)",Predictor="S gene status",
-                                                    `Hazard rate (95% CI)`="\u2014",`p value`="\u2014")
+                                                    `Hazard ratio (95% CI)`="\u2014",`p value`="\u2014")
   ) %>%
     mutate(
       Predictor = Predictor %>% forcats::as_factor() %>% forcats::fct_relevel("S gene status"),
       Value = Value %>% forcats::as_factor() %>% forcats::fct_relevel("Positive (ref)"),
       Model = Model %>% forcats::as_factor() %>% forcats::fct_relevel("S gene + age")
     )
-  return(out %>% select(Model,Predictor,Value,`Hazard rate (95% CI)`,`p value`) %>% group_by(Model,Predictor) %>% arrange(Model,Predictor,Value))
+  return(out %>% select(Model,Predictor,Value,`Hazard ratio (95% CI)`,`p value`) %>% group_by(Model,Predictor) %>% arrange(Model,Predictor,Value))
 }
 

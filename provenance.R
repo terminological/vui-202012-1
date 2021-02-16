@@ -17,6 +17,7 @@ p_comment = function(.data, .messageDf=NULL, type="info", .headline=NULL, termin
 
   grps = .data %>% groups()
   tmp = .messageDf
+  env$total = nrow(.data)
   # convert .message into a data frame if not already
   if (!is.data.frame(tmp)) {
     tmp = tibble(.message=as.character(tmp))
@@ -140,6 +141,7 @@ p_exclude = function(.data, ..., na.rm=FALSE, .headline="Exclude:") {
   default_env = rlang::caller_env()
   out = .data %>% mutate(.retain = TRUE)
   filters = rlang::list2(...)
+  default_env$total = nrow(.data)
   for(filter in filters) {
     glueSpec = rlang::f_rhs(filter)
     filt = rlang::f_lhs(filter)
@@ -168,6 +170,7 @@ p_status = function(.data, ..., na.count=FALSE, .headline=NULL) {
   grps = .data %>% groups()
   default_env = rlang::caller_env()
   out = .data
+  default_env$total = nrow(.data)
   filters = rlang::list2(...)
   if(length(filters)==0) filters = list(TRUE ~ "{count} items")
   for(filter in filters) {
@@ -226,6 +229,7 @@ p_mutate = function(.data, ..., .message = NULL) {
 # TODO: multiple columns
 p_group_by = function(.data, col, .message = NULL) {
   col = ensym(col)
+  total = nrow(.data)
   if(identical(.message,NULL)) .message = glue::glue("stratifying by {col}",col=col)
   tmp = .data %>% ungroup() %>% p_copy(.data)
   tmp = tmp %>% p_comment(.message, "stratify") %>% group_by(!!col)
@@ -289,7 +293,7 @@ p_flowchart = function(.data, filename = NULL, fill="lightgrey", fontsize="8", c
       "}",sep="\n")
     ) %>% arrange(desc(rank)) %>% pull(rankSpec) %>% paste0(collapse="\n")
   
-  outEdge = edgesDf %>% arrange(desc(id)) %>% mutate(edgeSpec = glue::glue("'{from}' -> '{to}' [tailport='{tailport}',headport='{headport}',weight='{weight}']")) %>%
+  outEdge = edgesDf %>% arrange(desc(id)) %>% mutate(edgeSpec = glue::glue("'{from}' -> '{to}' [tailport='{tailport}',weight='{weight}']")) %>%
     pull(edgeSpec) %>% paste0(collapse="\n")
   
   outGraph = paste(
@@ -299,20 +303,22 @@ p_flowchart = function(.data, filename = NULL, fill="lightgrey", fontsize="8", c
         rankdir = 'TB',
         outputorder = 'edgesfirst',
         bgcolor = 'white',
+        ranksep = '0.25',
+        nodesep = '0.2',
         newrank='true']
-        
+
     node [fontname = 'Helvetica',
         fontsize = '8',
         shape='box',
         fixedsize = 'false',
-        width = '0.5',
+        margin = '0.1,0.1',
+        width = '0',
         height = '0',
-        margin = '0.1',
         style = 'filled',
         color = 'black',
         fontcolor = 'black',
         labeljust='l']
-        
+
     edge [fontname = 'Helvetica',
         fontsize = '8',
         len = '0.5',

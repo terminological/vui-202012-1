@@ -39,7 +39,7 @@ options(dplyr.summarise.inform = FALSE)
 
 # load functions
 source("./new-variant-mortality.R")
-datadate="20210129"
+datadate="20210212"
 outdir = paste0("~/Dropbox/covid19/new-variant/",datadate,"/")
 if(!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
 outfile = function(x) paste0(outdir,x)
@@ -48,7 +48,7 @@ outfile = function(x) paste0(outdir,x)
 ```{r}
 ## Do the analysis ----
 if(!exists("coxData")) 
-  coxData = loadData(date = datadate)
+  coxData = loadData(date = datadate, latestDate = as.Date("2021-01-28"))
 coxData %>% p_status() %>% p_flowchart(outfile("DataFlow1"))
 ```
 
@@ -62,16 +62,16 @@ defaultAgeTol = 5
 defaultSpecTol = 1
 
 defaultModel = list(
-  `S gene + age` = Surv(time,status) ~ sGene+age,
-  `S gene + N gene CT`=Surv(time,status) ~ sGene+CT_N
+  `S gene + age` = Surv(time,status) ~ sGene+ageDec,
+  `S gene + N gene CT + age`=Surv(time,status) ~ sGene+CT_N_10+ageDec
 )
 
 models = list(
-  `S gene + age` = Surv(time,status) ~ sGene+age,
   `S gene only`=Surv(time,status) ~ sGene, 
-  `S gene + N gene CT`=Surv(time,status) ~ sGene+CT_N, 
-  `S gene + age + gender` = Surv(time,status) ~ sGene+age+sex,
-  `S gene + all covariates` = Surv(time,status) ~ sGene+age+sex+imd_decile+ethnicity_final #+residential_category
+  `S gene + age` = Surv(time,status) ~ sGene+ageDec,
+  `S gene + N gene CT + age`=Surv(time,status) ~ sGene+CT_N_10+ageDec, 
+  `S gene + age + gender` = Surv(time,status) ~ sGene+ageDec+sex,
+  `S gene + all covariates` = Surv(time,status) ~ sGene+ageDec+sex+imd_decile+ethnicity_final #+residential_category
 )
 
 sGeneOnly = list(
@@ -79,7 +79,7 @@ sGeneOnly = list(
 )
 
 sGeneAge = list(
-  `S gene + age` = Surv(time,status) ~ sGene+age
+  `S gene + age` = Surv(time,status) ~ sGene+ageDec
 )
 
 ```
@@ -101,22 +101,6 @@ if(!exists("run30"))
 run30$coxMatchedData %>% p_flowchart(outfile("Fig1_DataFlow2"))
 ```
 
-* some basic checks on the matched pairs data
-* are the counts over time sensible, 
-* are the censored dates sensible and identical, 
-* are the cumulative probability of death<t|died sensible
-* this is not included in the paper
-
-```{r}
-p1 = ggplot(run30$coxMatchedData, aes(x=time,colour=sGene,linetype=deathStatus))+geom_line(stat="count")+scale_y_log10()
-p2 = ggplot(run30$coxMatchedData %>% filter(status==0),aes(x=time,colour=sGene))+ stat_ecdf(geom = "step")+ylab("P(censored before t|censored)")
-p3 = ggplot(run30$coxMatchedData %>% filter(status==1),aes(x=time,colour=sGene))+ stat_ecdf(geom = "step")+ylab("P(died before t|died)")
-
-tmpFig = p1+p2+p3+patchwork::plot_annotation(tag_levels = "A")+patchwork::plot_layout(guides="collect")
-tmpFig %>% standardPrintOutput::saveThirdPageFigure(outfile("Diagnostics"))
-rm(p1,p2,p3,tmpFig)
-```
-
 ### Median sample KM curve
 
 * We select one bootstrap sample that produced the median HR for Kaplan-meier visualisation
@@ -128,7 +112,7 @@ tmp = run30$table4Data %>% filter(model=="S gene + age") %>% group_by(boot) %>% 
 middleBoot = which.min(abs(tmp$mean.HR-median(tmp$mean.HR)))
 kmfit = survminer::surv_fit(Surv(time,status) ~ sGene, run30$coxMatchedData %>% filter(boot==middleBoot))
 ggs = survminer::ggsurvplot(kmfit, conf.int = TRUE)
-fig1 = ggs$plot+coord_cartesian(ylim=c(0.995,1))
+fig1 = ggs$plot+coord_cartesian(ylim=c(0.995,1))+xlab("Time from first positive test")
 if(spo) {
   (fig1+standardPrintOutput::defaultFigureLayout()+standardPrintOutput::narrower())  %>% 
     standardPrintOutput::saveSixthPageFigure(outfile("Fig2_KMCurve"))
@@ -157,7 +141,7 @@ if(spo) {
 * this is table 2
 
 ```{r}
-summary = summariseAnalysisRun(run30)
+summary = summariseAnalysisRun(run30) %>% filter(model %in% c("S gene + age", "S gene + N gene CT + age"))
 if(spo) {
   prettyPrintSummary(summary) %>% 
     standardPrintOutput::saveTable(outfile("Tab_2HRSummaryTable"),defaultFontSize = 8)
@@ -226,7 +210,7 @@ if (!exists("summaryCT")) {
     summaryCT = summaryCT %>% bind_rows(summariseAnalysisRun(run))
   }
 }
-p1 = ggplot(summaryCT %>% filter(model=="S gene + age" & term == "sGeneNegative"), aes(x=ctThreshold, y=mean.HR,ymin=mean.HR.lower,ymax=mean.HR.upper))+geom_point(colour="red")+geom_errorbar(colour="red")+xlab("CT threshold")+ylab("Hazard rate")+
+p1 = ggplot(summaryCT %>% filter(model=="S gene + age" & term == "sGeneNegative"), aes(x=ctThreshold, y=mean.HR,ymin=mean.HR.lower,ymax=mean.HR.upper))+geom_point(colour="red")+geom_errorbar(colour="red")+xlab("CT threshold")+ylab("Hazard ratio")+
   #geom_smooth(method = "lm",formula = y ~ poly(x, 2),se=TRUE,alpha=0.5)
   #geom_smooth(method = "lm",se=TRUE,alpha=0.5)+
   coord_cartesian(ylim=c(0.5,3))+
@@ -247,7 +231,7 @@ if (!exists("summaryDateTol")) {
   }
 }
 
-p2 = ggplot(summaryDateTol %>% filter(model=="S gene + age" & term == "sGeneNegative"), aes(x=specimenDateTolerance, y=mean.HR,ymin=mean.HR.lower,ymax=mean.HR.upper))+geom_point(colour="red")+geom_errorbar(colour="red")+xlab("Mismatch tolerance - sample date (days)")+ylab("Hazard rate")+
+p2 = ggplot(summaryDateTol %>% filter(model=="S gene + age" & term == "sGeneNegative"), aes(x=specimenDateTolerance, y=mean.HR,ymin=mean.HR.lower,ymax=mean.HR.upper))+geom_point(colour="red")+geom_errorbar(colour="red")+xlab("Mismatch tolerance - sample date (days)")+ylab("Hazard ratio")+
   #geom_smooth(method = "lm",formula = y ~ poly(x, 2),se=TRUE,alpha=0.5)
   #geom_smooth(method = "lm",se=TRUE,alpha=0.5)+
   scale_x_continuous(breaks = c(0,7,14))+
@@ -271,7 +255,7 @@ if (!exists("summaryAgeTol")) {
   }
 }
 
-p3 = ggplot(summaryAgeTol %>% filter(model=="S gene + age" & term == "sGeneNegative"), aes(x=ageTolerance, y=mean.HR,ymin=mean.HR.lower,ymax=mean.HR.upper))+geom_point(colour="red")+geom_errorbar(colour="red")+xlab("Mismatch tolerance - age (years)")+ylab("Hazard rate")+
+p3 = ggplot(summaryAgeTol %>% filter(model=="S gene + age" & term == "sGeneNegative"), aes(x=ageTolerance, y=mean.HR,ymin=mean.HR.lower,ymax=mean.HR.upper))+geom_point(colour="red")+geom_errorbar(colour="red")+xlab("Mismatch tolerance - age (years)")+ylab("Hazard ratio")+
   #geom_smooth(method = "lm",formula = y ~ poly(x, 2),se=TRUE,alpha=0.5)
   #geom_smooth(method = "lm",se=TRUE,alpha=0.5)+
   scale_x_continuous(breaks = c(0,3,6,9))+

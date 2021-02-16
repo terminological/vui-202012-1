@@ -5,9 +5,9 @@ University of Exeter outcomes analysis for the UK "variant of concern" VOC-20201
 This code is the aimed to be reproducible given a set of data files. These data files are not generally shareable due to the potential for re-identification but can
 be obtained upon request and signing a data sharing agreement from public health england. The particular files used in our analysis are:
 
-* 20210129 COVID19 Deaths.xlsx
-* Anonymised Combined Line List 20210129.csv
-* SGTF_linelist_20210129.csv
+* 20210212 COVID19 Deaths.xlsx
+* Anonymised Combined Line List 20210212.csv
+* SGTF_linelist_20210212.csv
 
 This code depends on the following libraries:
 * tidyverse
@@ -17,12 +17,15 @@ This code depends on the following libraries:
 * patchwork
 * DiagrammeR
 * DiagrammeRsvg
+* LaplacesDemon
 
 There is also an optional dependency on a library for producing formatted outputs: [standardPrintOutput](https://github.com/terminological/standard-print-output). 
 This has a lot of its own dependencies, and may not be particularly useful.
 
 The main analysis is in the new-variant-mortality.Rmd markdown file which depends on the functions defined in new-variant-mortality.R file, the code is not 
 heavily optimised and relies on a substantial mount of memory being available - 16Gb minimum.
+
+The supplementary materials are in the supplementary-material.Rmd markdown file.
 
 The environment the analysis was run on was:
 
